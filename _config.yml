@@ -1,0 +1,86 @@
+theme: jekyll-theme-chirpy
+lang: en
+timezone: Europe/Rome
+
+title: "Federico Carbone"
+tagline: "Solutions Architect @ Ping Identity"
+description: >-
+  Technical notes on IAM, security, APIs, AI, distributed systems, and application design, written to learn new concepts and remember them clearly.
+
+url: "https://carbonefederico.github.io"
+baseurl: "/blog-content"
+
+github:
+  username: carbonefederico
+
+social:
+  name: FC
+  email:
+  links:
+    - https://github.com/carbonefederico
+
+avatar: /assets/img/avatar.svg
+
+markdown: kramdown
+theme_mode: dark
+toc: true
+paginate: 10
+
+kramdown:
+  footnote_backlink: "&#8617;&#xfe0e;"
+  syntax_highlighter: rouge
+  syntax_highlighter_opts:
+    css_class: highlight
+    span:
+      line_numbers: false
+    block:
+      line_numbers: true
+      start_line: 1
+
+collections:
+  tabs:
+    output: true
+    sort_by: order
+
+defaults:
+  - scope:
+      path: ""
+      type: posts
+    values:
+      layout: post
+      toc: true
+      permalink: /posts/:title/
+  - scope:
+      path: ""
+      type: tabs
+    values:
+      layout: page
+      permalink: /:title/
+
+sass:
+  style: compressed
+
+compress_html:
+  clippings: all
+  comments: all
+  endings: all
+  blanklines: false
+
+plugins:
+  - jekyll-archives
+  - jekyll-seo-tag
+  - jekyll-sitemap
+
+jekyll-archives:
+  enabled: [categories, tags]
+  layouts:
+    category: category
+    tag: tag
+  permalinks:
+    category: /categories/:name/
+    tag: /tags/:name/
+
+exclude:
+  - README.md
+  - LICENSE
+  - tools
