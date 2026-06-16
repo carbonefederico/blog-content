@@ -73,6 +73,8 @@ flowchart LR
 
 The following videos demonstrate the end-user experience. First, the no-session journey shows what happens when the user starts from a fresh ChatGPT conversation and crosses from a public flow into a protected one. Second, the existing-session journey shows the same general flow when the user already has an authenticated session and can move more quickly into protected actions:
 
+For this demo, payment details are assumed to already be on file with `MyHotels`. ChatGPT does not collect or submit card data. Once the required authorization checks are satisfied, the backend booking service is the component that completes the mocked payment and confirms the booking.
+
 <video controls preload="metadata" width="100%">
   <source src="{{ '/assets/videos/ChatGPT%20Booking%20-%20New%20Session.mp4' | relative_url }}" type="video/mp4">
   Your browser does not support the video tag.
@@ -90,6 +92,8 @@ The following video shows the booking flow when the policy uses transaction thre
   <source src="{{ '/assets/videos/ChatGPT%20Booking%20-%20End%20user%20-%20Existing%20Session%20below%20%26%20above%20threshold.mp4' | relative_url }}" type="video/mp4">
   Your browser does not support the video tag.
 </video>
+
+
 
 ## How ChatGPT Apps Work
 
