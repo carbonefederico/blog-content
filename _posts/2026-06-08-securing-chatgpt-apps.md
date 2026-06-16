@@ -130,14 +130,15 @@ At a high level, Ping Identity plays four different roles in this demo. First, P
 
 ## PingOne Authorize
 
-The current demo does not rely only on OAuth scopes at the MCP layer. Every tool call is sent to PingOne Authorize with a flattened decision payload that identifies the MCP service, the requested tool, selected request parameters, and the inbound ChatGPT bearer token, so that PingOne Authorize can decide whether the tool call should be allowed.
+The current demo does not rely only on OAuth scopes at the MCP layer. Every tool call is sent to PingOne Authorize with a payload that identifies the MCP service, the requested tool, selected request parameters, and the inbound ChatGPT bearer token, so that PingOne Authorize can decide whether the tool call should be allowed.
 
 That lets the MCP server enforce a mixed model:
 
-- `search_hotels` is public but still policy-controlled
-- `search_hotels_member_rates` requires a signed-in ChatGPT user and the member-rates scope
-- `prepare_booking` requires the booking scope and is also evaluated against the booking amount
-- `finalize_booking` requires the booking scope and the right booking owner
+- `search_hotels` remains available to unauthenticated users so the public hotel catalog can be searched without sign-in
+- `search_hotels_member_rates` is allowed only when the request is initiated by a user who is allowed to access ChatGPT, the actor context shows the ChatGPT connector acting on behalf of that user, the token is intended for the MCP resource, and the token carries the correct scope
+- `prepare_booking` is allowed only when the same user, actor, audience, and MCP booking-scope checks pass, and the decision also evaluates quote attributes such as `totalPrice` and `currency`
+- `finalize_booking` is allowed only when the same protected-user, actor, audience, and scope checks pass
+- any MCP request that does not satisfy one of those allowed patterns is denied
 
 For booking, the important point is that policy is not binary. The quote amount changes the outcome:
 
