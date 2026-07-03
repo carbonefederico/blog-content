@@ -1,0 +1,63 @@
+/* Keep Mermaid diagrams readable when Chirpy renders in dark mode. */
+.mermaid svg {
+  background: transparent !important;
+}
+
+.mermaid .actor,
+.mermaid .node rect,
+.mermaid .node circle,
+.mermaid .node ellipse,
+.mermaid .node polygon,
+.mermaid .node path {
+  fill: #f3f4f6 !important;
+  stroke: #8b8b8b !important;
+}
+
+.mermaid .actor,
+.mermaid .actor tspan,
+.mermaid .nodeLabel,
+.mermaid .nodeLabel p,
+.mermaid .label,
+.mermaid .label text {
+  color: #111 !important;
+  fill: #111 !important;
+}
+
+.mermaid .messageText,
+.mermaid .messageText tspan,
+.mermaid .loopText,
+.mermaid .loopText tspan,
+.mermaid .noteText,
+.mermaid .noteText tspan {
+  fill: #e5e7eb !important;
+  color: #e5e7eb !important;
+}
+
+.mermaid .messageLine0,
+.mermaid .messageLine1,
+.mermaid .actor-line,
+.mermaid .edgePath .path,
+.mermaid .flowchart-link {
+  stroke: #9ca3af !important;
+}
+
+.mermaid marker path {
+  fill: #9ca3af !important;
+  stroke: #9ca3af !important;
+}
+
+.mermaid .edgeLabel,
+.mermaid .edgeLabel p,
+.mermaid .labelBkg,
+.mermaid .edgeLabel rect {
+  background: #2b2b2b !important;
+  fill: #2b2b2b !important;
+  color: #e5e7eb !important;
+}
+
+.mermaid .cluster rect,
+.mermaid .loopLine,
+.mermaid .note {
+  fill: transparent !important;
+  stroke: #8b8b8b !important;
+}
