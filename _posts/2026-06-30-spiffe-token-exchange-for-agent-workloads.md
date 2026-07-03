@@ -345,9 +345,9 @@ flowchart LR
     ACCESS["<b>Access token mapping</b><br/>(sets claims, scopes<br/>and actor chain)"]
     ISSUER["<b>Token issuer</b><br/>(issues next-hop<br/>access token)"]
 
-    ST -->|" user context "| POLICY
-    AT -->|" workload context "| POLICY
-    POLICY -->|" permit exchange "| ACCESS
+    ST -->|" user claims "| POLICY
+    AT -->|" workload claims "| POLICY
+    POLICY -->|" inbound claims "| ACCESS
     ACCESS -->|" token contract "| ISSUER
 ```
 
@@ -389,3 +389,4 @@ One thing this article does not solve is proof of possession. The exchanged toke
 - SPIFFE overview: [SPIFFE documentation](https://spiffe.io/docs/latest/spiffe-about/overview/)
 - SPIRE concepts: [SPIRE documentation](https://spiffe.io/docs/latest/spire-about/spire-concepts/)
 - PingFederate OAuth configuration: [PingFederate Server documentation](https://docs.pingidentity.com/pingfederate/latest/administrators_reference_guide/pf_oauth_config.html)
+- Source code: [carbonefederico/ai-spiffe-token-exchange-demo](https://github.com/carbonefederico/ai-spiffe-token-exchange-demo)

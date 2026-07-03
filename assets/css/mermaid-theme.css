@@ -3,7 +3,7 @@
   background: transparent !important;
 }
 
-.mermaid .actor,
+.mermaid rect.actor,
 .mermaid .node rect,
 .mermaid .node circle,
 .mermaid .node ellipse,
@@ -13,8 +13,8 @@
   stroke: #8b8b8b !important;
 }
 
-.mermaid .actor,
-.mermaid .actor tspan,
+.mermaid text.actor,
+.mermaid text.actor tspan,
 .mermaid .nodeLabel,
 .mermaid .nodeLabel p,
 .mermaid .label,
