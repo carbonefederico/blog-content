@@ -1,11 +1,8 @@
-# Federico Carbone
+# blog-content
 
-This is the public GitHub Pages repository for Federico Carbone, built with the Chirpy Jekyll theme.
+This is the public GitHub Pages repository for FC Tech, built with the Chirpy Jekyll theme.
 
-The expected Pages URL for this project site is:
-
-`https://carbonefederico.github.io/blog-content/`
-
+Only published articles belong here. Drafting, outlining, and review happen in the private `blogger-agent` repository, and published content is synced into this repository.
 
 ## Local Development
 
@@ -15,6 +12,10 @@ Run the site locally with:
 bundle install
 bundle exec jekyll serve
 ```
+
+The expected Pages URL for this project site is:
+
+`https://carbonefederico.github.io/blog-content/`
 
 ## Structure
 

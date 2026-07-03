@@ -1,0 +1,73 @@
+.mermaid svg {
+  min-width: 760px;
+}
+
+.mermaid svg text,
+.mermaid svg foreignObject {
+  font-size: 18px !important;
+}
+
+.diagram-zoom-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  margin: 0.35rem 0 0.75rem;
+  padding: 0.3rem 0.65rem;
+  border: 1px solid var(--text-muted-color, #777);
+  border-radius: 0.35rem;
+  background: var(--main-bg, #fff);
+  color: var(--text-color, #222);
+  font-size: 0.85rem;
+  line-height: 1.2;
+  cursor: pointer;
+}
+
+.diagram-zoom-action:hover,
+.diagram-zoom-action:focus {
+  border-color: var(--link-color, #555);
+  color: var(--link-color, #111);
+}
+
+.diagram-zoom-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 2000;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  padding: 2rem;
+  background: rgba(0, 0, 0, 0.72);
+}
+
+.diagram-zoom-modal.is-open {
+  display: flex;
+}
+
+.diagram-zoom-panel {
+  position: relative;
+  width: min(96vw, 1280px);
+  max-height: 92vh;
+  overflow: auto;
+  padding: 3rem 1.5rem 1.5rem;
+  border: 1px solid #666;
+  border-radius: 0.5rem;
+  background: #fff;
+}
+
+.diagram-zoom-panel svg {
+  width: 1400px;
+  max-width: none;
+  height: auto;
+}
+
+.diagram-zoom-close {
+  position: absolute;
+  top: 0.75rem;
+  right: 0.75rem;
+  padding: 0.25rem 0.65rem;
+  border: 1px solid #777;
+  border-radius: 0.35rem;
+  background: #f5f5f5;
+  color: #111;
+  cursor: pointer;
+}
