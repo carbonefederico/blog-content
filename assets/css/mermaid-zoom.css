@@ -2,6 +2,62 @@
   min-width: 760px;
 }
 
+.mermaid .node rect,
+.mermaid .node circle,
+.mermaid .node ellipse,
+.mermaid .node polygon,
+.mermaid .node path {
+  fill: #f3f4f6 !important;
+  stroke: #555 !important;
+}
+
+.mermaid .nodeLabel,
+.mermaid .nodeLabel p,
+.mermaid .label,
+.mermaid .label text,
+.mermaid .actor,
+.mermaid .messageText,
+.mermaid .loopText,
+.mermaid .noteText {
+  color: #111 !important;
+  fill: #111 !important;
+}
+
+.mermaid .edgePath .path,
+.mermaid .flowchart-link,
+.mermaid .messageLine0,
+.mermaid .messageLine1 {
+  stroke: #555 !important;
+}
+
+.mermaid .edgeLabel,
+.mermaid .edgeLabel p,
+.mermaid .labelBkg,
+.mermaid .edgeLabel rect {
+  background: #f8f8f8 !important;
+  fill: #f8f8f8 !important;
+  color: #111 !important;
+}
+
+.mermaid .cluster rect {
+  fill: #f7f7f7 !important;
+  stroke: #777 !important;
+}
+
+.mermaid .actor,
+.mermaid .actor-line {
+  stroke: #555 !important;
+}
+
+.mermaid .actor {
+  fill: #f3f4f6 !important;
+}
+
+.mermaid .note {
+  fill: #f8f8f8 !important;
+  stroke: #777 !important;
+}
+
 .mermaid svg text,
 .mermaid svg foreignObject {
   font-size: 18px !important;
