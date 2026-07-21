@@ -70,6 +70,8 @@ No shared secret is needed between the workload and PingFederate. The trust is b
 
 The browser uses Authorization Code + PKCE with PingFederate. After that, the server-side path uses token exchange with SPIFFE JWT-SVID actor tokens.
 
+Each token exchange produces a new access token targeted at the next service in the chain, with a different audience while preserving the delegated user identity.
+
 ```mermaid
 %%{init: {'flowchart': {'curve': 'linear'}}}%%
 flowchart LR
@@ -81,25 +83,25 @@ flowchart LR
     S["SPIRE / SPIFFE"]
 
     B -->|" authorize + PKCE "| PF
-    PF -->|" Portal API token "| B
-    B -->|" API call (Portal API token) "| P
+    PF -->|" User Token<br/>sub=User<br/>act=-<br/>aud=Portal API "| B
+    B -->|" API call (User Token) "| P
     P -->|" fetch JWT-SVID "| S
-    P -->|" token exchange<br/>subject=user token<br/>actor=portal JWT-SVID "| PF
-    PF -->|" Agent Token "| P
+    P -->|" token exchange<br/>subject=User Token<br/>actor=Portal JWT-SVID "| PF
+    PF -->|" Agent Token<br/>sub=User<br/>act=Portal API<br/>aud=Agent "| P
     P -->|" A2A call (Agent Token) "| A
     A -->|" fetch JWT-SVID "| S
-    A -->|" token exchange<br/>subject=agent token<br/>actor=agent JWT-SVID "| PF
-    PF -->|" MCP Token "| A
+    A -->|" token exchange<br/>subject=Agent Token<br/>actor=Agent JWT-SVID "| PF
+    PF -->|" MCP Token<br/>sub=User<br/>act=Agent<br/>aud=MCP Server "| A
     A -->|" MCP tool call (MCP Token) "| M
 ```
 
 The main components are:
 
 - Browser SPA: signs the user in with PingFederate and calls the portal API.
-- Portal API: validates the browser token, exchanges it for an agent token, and forwards the user request to the agent.
+- Portal API: validates the user token, exchanges it for an agent token, and forwards the user request to the agent.
 - Agent: validates the agent token, chooses MCP tools, exchanges the token again for the MCP audience, and calls the MCP server.
 - MCP server: validates the MCP token and enforces tool scopes before returning customer data.
-- PingFederate: issues browser, agent, and MCP access tokens, and validates the SPIFFE JWT-SVID actor token during token exchange.
+- PingFederate: issues the User Token, Agent Token, and MCP Token, and validates the SPIFFE JWT-SVID actor token during token exchange.
 - SPIRE: issues JWT-SVIDs to Kubernetes workloads through the SPIFFE Workload API.
 
 ## Expected Flow
@@ -107,17 +109,17 @@ The main components are:
 A normal support request follows this path:
 
 1. The user signs in through the Browser SPA.
-2. PingFederate issues a Portal API token to the Browser SPA.
-3. The Browser SPA calls `POST /api/chat` on the Portal API with the Portal API token.
-4. The Portal API validates the Portal API token.
+2. PingFederate issues a User Token for the Portal API to the Browser SPA.
+3. The Browser SPA calls `POST /api/chat` on the Portal API with the User Token.
+4. The Portal API validates the User Token.
 5. The Portal API fetches a portal JWT-SVID from SPIRE / SPIFFE.
-6. The Portal API sends a token exchange request to PingFederate with the Portal API token as the subject token and the portal JWT-SVID as the actor token.
-7. PingFederate issues an Agent Token to the Portal API.
+6. The Portal API sends a token exchange request to PingFederate with the User Token as the subject token and the portal JWT-SVID as the actor token.
+7. PingFederate issues an Agent Token to the Portal API for the Agent audience.
 8. The Portal API calls `POST /a2a/message` on the Agent with the Agent Token.
 9. The Agent validates the Agent Token and chooses MCP tools.
 10. The Agent fetches an agent JWT-SVID from SPIRE / SPIFFE.
 11. The Agent sends a token exchange request to PingFederate with the Agent Token as the subject token and the agent JWT-SVID as the actor token.
-12. PingFederate issues an MCP Token to the Agent.
+12. PingFederate issues an MCP Token to the Agent for the MCP Server audience.
 13. The Agent calls the MCP Server with the MCP Token.
 14. The MCP Server validates audience and scopes before returning profile or payment data.
 
