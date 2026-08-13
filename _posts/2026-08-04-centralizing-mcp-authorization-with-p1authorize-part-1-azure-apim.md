@@ -413,7 +413,7 @@ The next articles will apply the same pattern to additional enforcement surfaces
 
 **Resources**
 
-- [PingOne Authorize](https://docs.pingidentity.com/pingoneauthorize/latest){:target="_blank"} — PingOne Authorize product documentation.
+- [PingOne Authorize](https://docs.pingidentity.com/pingone/authorization_using_pingone_authorize/p1az_overview.html){:target="_blank"} — PingOne Authorize product documentation.
 - [Azure API Management policies](https://learn.microsoft.com/en-us/azure/api-management/api-management-policies){:target="_blank"} — reference for APIM inbound policy expressions and `send-request`.
 - [Source code](https://github.com/carbonefederico/ai-mcp-gateways-paz-integrations) — APIM policy fragment and configuration guidelines.
 

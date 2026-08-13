@@ -61,3 +61,11 @@
   fill: transparent !important;
   stroke: #8b8b8b !important;
 }
+
+/* Suppress Rouge false-positive error highlights in XML code blocks. */
+:root[data-bs-theme=dark] .language-xml .highlight .err,
+:root[data-bs-theme=light] .language-xml .highlight .err,
+.language-xml .highlight .err {
+  color: inherit !important;
+  background-color: inherit !important;
+}
