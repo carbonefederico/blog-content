@@ -1,6 +1,6 @@
 ---
 title: Centralizing MCP Authorization with PingOne Authorize - Part 1
-description: How to provide dynamic centralize authorization for MCP servers exposed by Azure APIM.
+description: How to centralize dynamic authorization for MCP servers exposed by Azure APIM.
 date: '2026-08-04'
 categories:
 - AI
