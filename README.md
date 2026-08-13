@@ -1,6 +1,6 @@
 # blog-content
 
-This is the public GitHub Pages repository for FC Tech, built with the Chirpy Jekyll theme.
+This is the public GitHub Pages repository for Federico Carbone, built with the Chirpy Jekyll theme.
 
 Only published articles belong here. Drafting, outlining, and review happen in the private `blogger-agent` repository, and published content is synced into this repository.
 
