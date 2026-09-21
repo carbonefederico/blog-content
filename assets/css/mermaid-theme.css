@@ -62,6 +62,23 @@
   stroke: #8b8b8b !important;
 }
 
+/* Subgraph/cluster titles: light on dark. Mermaid v11 renders them as .nodeLabel
+   inside a foreignObject that is a DIRECT child of g.cluster — while node labels
+   sit nested inside g.node. The direct-child selector recolors only the titles,
+   leaving node text dark-on-light. */
+.mermaid g.cluster > foreignObject span.nodeLabel,
+.mermaid g.cluster > foreignObject span.nodeLabel p,
+.mermaid .cluster-label,
+.mermaid .cluster-label span,
+.mermaid .cluster-label p,
+.mermaid .clusterTitle,
+.mermaid .clusterTitle text,
+.mermaid .statediagram-cluster,
+.mermaid .flowchart-title-text {
+  color: #e5e7eb !important;
+  fill: #e5e7eb !important;
+}
+
 /* Suppress Rouge false-positive error highlights in XML code blocks. */
 :root[data-bs-theme=dark] .language-xml .highlight .err,
 :root[data-bs-theme=light] .language-xml .highlight .err,
