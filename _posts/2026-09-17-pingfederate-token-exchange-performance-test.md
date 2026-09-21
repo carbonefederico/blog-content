@@ -34,22 +34,26 @@ The deployment is a standard Ping Identity Kubernetes topology: one administrati
 ```mermaid
 %%{init: {'flowchart': {'curve': 'linear'}}}%%
 flowchart TB
-    subgraph LB["Load generation"]
-        K1["k6 agent-0"]
-        K2["k6 agent-1"]
-        K9["k6 agent-9"]
-        JB["Kubernetes Job<br/>10 indexed completions"]
-    end
-
-    subgraph PF["PingFederate — namespace pf-perf"]
+    subgraph CL["Amazon EKS cluster — eu-west-1 (6 nodes, r5.xlarge)"]
         direction TB
-        ADM["pf-admin<br/>1 Pod, 2 CPU / 4 GiB limit"]
-        ENG1["pf-engine-0<br/>2 CPU req / 4 CPU lim"]
-        ENG2["pf-engine-1<br/>2 CPU req / 4 CPU lim"]
-        SVC["Kubernetes Service<br/>port 9031"]
-    end
 
-    JWKS["perf-jwks-server Pod<br/>nginx, serves subject-key JWKS over TLS"]
+        subgraph LB["Load generation"]
+            K1["k6 agent-0"]
+            K2["k6 agent-1"]
+            K9["k6 agent-9"]
+            JB["Kubernetes Job<br/>10 indexed completions"]
+        end
+
+        subgraph PF["PingFederate — namespace pf-perf"]
+            direction TB
+            ADM["pf-admin<br/>1 Pod, 2 CPU / 4 GiB limit"]
+            ENG1["pf-engine-0<br/>2 CPU req / 4 CPU lim"]
+            ENG2["pf-engine-1<br/>2 CPU req / 4 CPU lim"]
+            SVC["Kubernetes Service<br/>port 9031"]
+        end
+
+        JWKS["perf-jwks-server Pod<br/>nginx, serves subject-key JWKS over TLS"]
+    end
 
     JB --> K1 & K2 & K9
     K1 & K2 & K9 -->|"token exchange<br/>POST /as/token.oauth2"| SVC
