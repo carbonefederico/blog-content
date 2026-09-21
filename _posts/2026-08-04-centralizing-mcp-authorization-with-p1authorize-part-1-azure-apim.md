@@ -1,6 +1,6 @@
 ---
-title: Centralizing MCP Authorization with PingOne Authorize - Part 1
-description: How to centralize dynamic authorization for MCP servers exposed by Azure APIM.
+title: Centralizing MCP Authorization with PingAuthorize - Part 1
+description: How to centralize dynamic authorization for MCP servers exposed by Azure APIM with PingAuthorize.
 date: '2026-08-04'
 categories:
 - AI
@@ -10,7 +10,7 @@ mermaid: true
 tags:
 - MCP
 - Azure APIM
-- PingOne Authorize
+- PingAuthorize
 - OAuth
 - Authorization
 layout: post
@@ -22,9 +22,9 @@ Large organizations often adopt multiple cloud platforms, modern AI services, an
 
 Each platform introduces its own authorization mechanism, and over time, business rules become scattered across gateways, serverless functions, middleware, and application code. The result is duplicated policies, inconsistent decisions, difficult audits, and expensive maintenance.
 
-PingOne Authorize addresses this problem by separating **policy enforcement** from **policy decision making**. Gateways and applications remain responsible for enforcing decisions as Policy Enforcement Points (PEPs), while PingOne Authorize acts as the centralized no-code Policy Decision Point (PDP).
+PingAuthorize addresses this problem by separating **policy enforcement** from **policy decision making**. Gateways and applications remain responsible for enforcing decisions as Policy Enforcement Points (PEPs), while PingAuthorize acts as the centralized no-code Policy Decision Point (PDP).
 
-This is the first article in a series exploring how PingOne Authorize can centralize authorization decisions across different platforms and MCP environments.
+This is the first article in a series exploring how PingAuthorize can centralize authorization decisions across different platforms and MCP environments.
 
 I start with **Azure API Management (APIM)** protecting an MCP server, while future articles will apply the same model to other enforcement points such as AWS AgentCore Gateway.
 

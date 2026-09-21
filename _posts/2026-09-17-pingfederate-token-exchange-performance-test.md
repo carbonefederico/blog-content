@@ -50,6 +50,7 @@ flowchart TB
             SVC["Kubernetes Service<br/>port 9031"]
         end
 
+        JWKS["perf-jwks-server Pod<br/>nginx, serves subject-key JWKS"]
         N1["node r5.xlarge<br/>4 vCPU / 32 GiB"]
         N2["node r5.xlarge<br/>4 vCPU / 32 GiB"]
         N3["node r5.xlarge<br/>4 vCPU / 32 GiB"]
@@ -58,6 +59,8 @@ flowchart TB
     JB --> K1 & K2 & K9
     K1 & K2 & K9 -->|"token exchange<br/>POST /as/token.oauth2"| SVC
     SVC --> ENG1 & ENG2
+    ENG1 -.->|"JWKS fetch"| JWKS
+    ENG2 -.->|"JWKS fetch"| JWKS
     ADM -.->|"config replication"| ENG1
     ADM -.->|"config replication"| ENG2
     ENG1 -.-> N1
@@ -67,10 +70,11 @@ flowchart TB
 
 - k6 agent Pods: every iteration signs a brand-new RS256 subject token and exchanges it exactly once — no token is reused, no two requests carry the same token. The 10 Pods simulate 10 concurrent agent instances acting on behalf of one pool of 100 synthetic user identities, rotating round-robin. In PingFederate each Pod authenticates as its own OAuth client — `perf-agent-0` through `perf-agent-9` — and the subject token's audience is the calling agent's client id.
 - Kubernetes Service: load-balances across both engine Pods on port 9031; admin traffic is not part of the test.
-- PingFederate engines: run the measured path — JWT validation, token-exchange policy, output-token signing.
+- PingFederate engines: run the measured path — JWKS fetch and caching, JWT validation, token-exchange policy, output-token signing.
 - PingFederate admin: configures the engines through cluster replication and stays idle.
+- perf-jwks-server: a small nginx Pod serving the subject-token verification JWKS over HTTP; the engines fetch and cache it — this is the issuer side of the key-distribution path.
 
-Each exchange is a production-shaped RFC 8693 request: `client_secret_basic` authentication, a self-contained JWT subject token validated against a JWKS (issuer, audience, expiry all checked from the token itself), the token-exchange policy, and an RS256-signed output token. Deliberately excluded: user authentication (subject tokens are self-signed by the generator — no IdP round-trip), persistent-grant storage (the client is grant-only `TOKEN_EXCHANGE`, so the store is never touched), and external policy calls. The results are a floor for real deployments; those add storage-backed steps on top.
+Each exchange is a production-shaped RFC 8693 request: `client_secret_basic` authentication, a self-contained JWT subject token, the token-exchange policy, and an RS256-signed output token. The engines validate the subject token's signature, issuer, audience, and expiry against a JWKS they fetch over HTTP from an in-cluster key-publishing Pod — a small nginx Pod (`perf-jwks-server`) deployed as its own release before PingFederate starts, so the key source never disappears with the load-test release. That is the issuer-publishes/verifier-fetches key distribution production uses, with PingFederate's JWKS fetch, caching, and refresh on the measured path instead of embedded key material. (The Pod was introduced after this campaign ran: the measured stages validated against the same JWKS embedded in the engine config. Per request the work is identical — validation always hits PingFederate's local JWKS cache — so the numbers carry over.) Deliberately excluded: user authentication (subject tokens are self-signed by the generator — no IdP round-trip), persistent-grant storage (the client is grant-only `TOKEN_EXCHANGE`, so the store is never touched), and external policy calls. The results are a floor for real deployments; those add storage-backed steps on top.
 
 Here is one measured exchange — every k6 iteration performs exactly this. Secrets are redacted; tokens are truncated for print.
 
@@ -79,14 +83,15 @@ Request (the subject token is signed by the load generator, RS256):
 ```http
 POST /as/token.oauth2 HTTP/2
 Host: pf-pingfederate-engine:9031
-Authorization: Basic cGVyZi1hZ2VudC0wOjxwZXJmX2NsaWVudC1zZWNyZXQ->
+Authorization: Basic cGVyZi1hZ2VudC0zOjxwZXJmX2NsaWVudC1zZWNyZXQ->
 Content-Type: application/x-www-form-urlencoded
 
 grant_type=urn%3Aietf%3Aparams%3Aoauth%3Agrant-type%3Atoken-exchange
 &subject_token=eyJhbGciOiAiUlMyNTYiLCAidHlwIjogIkpXVCIs…[611 chars]
 &subject_token_type=urn%3Aietf%3Aparams%3Aoauth%3Atoken-type%3Aaccess_token
 &requested_token_type=urn%3Aietf%3Aparams%3Aoauth%3Atoken-type%3Aaccess_token
-&resource=https%3A%2F%2Fapi.example.com%2Finternal%2F
+&resource=https%3A%2F%2Fmcp.example.internal%2Fmcp
+&scope=mcp%3Atools%3Ainvoke
 ```
 
 The subject token's claims (decoded):
@@ -94,11 +99,11 @@ The subject token's claims (decoded):
 ```json
 {
   "iss": "https://pf-perf-subject",
-  "sub": "perf-user-001",
-  "aud": "perf-agent-0",
-  "iat": 1789977219,
-  "exp": 1789977519,
-  "jti": "readme-demo-2"
+  "sub": "perf-user-042",
+  "aud": "perf-agent-3",
+  "iat": 1789978138,
+  "exp": 1789978438,
+  "jti": "mcp-final-1"
 }
 ```
 
@@ -131,21 +136,21 @@ Payload (decoded):
 
 ```json
 {
-  "scope": "",
+  "scope": "mcp:tools:invoke",
   "authorization_details": [],
-  "client_id": "perf-agent-0",
+  "client_id": "perf-agent-3",
   "iss": "https://pf-pingfederate-engine",
-  "aud": "token-exchange-perf",
-  "iat": 1789977219,
-  "sub": "perf-user-001",
+  "iat": 1789978138,
+  "sub": "perf-user-042",
+  "aud": "https://mcp.example.internal/mcp",
   "act": {
-    "sub": "perf-agent-0"
+    "sub": "perf-agent-3"
   },
-  "exp": 1789977519
+  "exp": 1789978438
 }
 ```
 
-Reading the claims: `sub` is the subject user, taken from the subject token's `sub` through the token-exchange processor policy; `act.sub` is the **authenticated client id**, built by the access-token mapping from `context.ClientId` — the caller never sends actor material; `aud` is the access token manager's configured Audience Claim Value — the `resource=` parameter selects that token manager (RFC 8707) but does not become the audience; `exp - iat` is the token manager's 5-minute lifetime.
+Reading the claims: `sub` is the subject user, taken from the subject token's `sub` through the token-exchange processor policy; `act.sub` is the **authenticated client id**, built by the access-token mapping from `context.ClientId` — the caller never sends actor material; `aud` is the **requested resource URI** — the `resource=` parameter selects the token manager (RFC 8707; an unmatched URI is rejected with `invalid_target`) and the same value is fulfilled into the `aud` claim, so the token is audience-restricted to the target MCP server; `scope` carries the requested scope, registered in the OAuth server settings — here `mcp:tools:invoke`; `exp - iat` is the token manager's 5-minute lifetime.
 
 The PingFederate side is fully declarative: a server profile carries all required objects as bulk-config JSON that the image imports at startup, and both engines are guaranteed identical configuration through cluster replication.
 
@@ -157,7 +162,7 @@ The environment, in full:
 
 **Cluster.** Amazon EKS, region eu-west-1, Kubernetes 1.35 (EKS build), six worker nodes, Amazon Linux 2023.
 
-**Nodes.** All r5.xlarge: 4 vCPU and 32 GiB each — roughly 24 vCPU of total capacity. The cluster is shared development infrastructure hosting the other demo workloads I use for articles at all times, and the k6 Pods were scheduled with no pinning. The test never came close to using that capacity, and did not need to: the measured workload — two engines, the admin, and ten generators — asks for roughly 5 to 6 cores of the 24. The numbers below describe what PingFederate does at 500 exchanges per second, not what the cluster can do.
+**Nodes.** All r5.xlarge: 4 vCPU and 32 GiB each — roughly 24 vCPU of total capacity. The cluster is shared development infrastructure hosting the other demo workloads I use for articles at all times, and the k6 Pods were scheduled with no pinning. The test never came close to using that capacity, and did not need to: the measured workload — two engines, the admin, the JWKS endpoint, and ten generators — asks for roughly 5 to 6 cores of the 24. The numbers below describe what PingFederate does at 500 exchanges per second, not what the cluster can do.
 
 **PingFederate sizing.** Deliberately modest, close to a small production starter:
 
