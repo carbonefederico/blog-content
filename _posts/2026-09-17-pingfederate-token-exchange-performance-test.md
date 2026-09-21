@@ -1,6 +1,6 @@
 ---
 title: How expensive is a token exchange, really?
-description: 'A load-test of RFC 8693 token exchange against a two-engine PingFederate cluster on Kubernetes: 500 exchanges per second at a 23 ms p95 while the two engines together used under three cores.'
+description: 'A load-test of RFC 8693 token exchange against a two-engine PingFederate cluster on Kubernetes: 500 exchanges per second at a 9 ms p95 while the two engines together used around half a core.'
 date: '2026-09-17'
 categories:
 - AI
@@ -21,7 +21,7 @@ layout: post
 
 Token exchange has become the de-facto standard way to cross a trust boundary in agentic architectures. The agent receives a user-scoped token, proves its own identity, and exchanges both for a new token targeted at the next service. I have described the pattern in earlier posts on [SPIFFE workload identity](/posts/spiffe-token-exchange-for-agent-workloads/) and on [protecting MCP servers](/posts/protecting-mcp-servers-with-agentcore-gateway-and-pingone-authorize/).
 
-Whenever I propose it, the same performance concern comes up: every extra exchange adds a hop to the authorization server, and a chatty agent could multiply that hop many times. The concern is reasonable, but it is usually stated without data. So I measured it. The short version: at 500 exchanges per second the p95 latency was 23 milliseconds and both engines together used fewer than three cores, with zero failures across the whole campaign. One exchange costs about six milliseconds of a single core.
+Whenever I propose it, the same performance concern comes up: every extra exchange adds a hop to the authorization server, and a chatty agent could multiply that hop many times. The concern is reasonable, but it is usually stated without data. So I measured it. The short version: at 500 exchanges per second the p95 latency was 9 milliseconds, with zero failures across the whole campaign. One exchange costs about five milliseconds of a single core — at the monitored stage the two engines together used around half a core.
 
 The campaign tops out at 500 exchanges per second by choice. For small and medium environments that is a sensible baseline — several times what a mid-size agent platform generates — and driving past it on shared test hardware would measure the neighbors' load as much as PingFederate.
 
@@ -50,7 +50,7 @@ flowchart TB
             SVC["Kubernetes Service<br/>port 9031"]
         end
 
-        JWKS["perf-jwks-server Pod<br/>nginx, serves subject-key JWKS"]
+        JWKS["perf-jwks-server Pod<br/>nginx, serves subject-key JWKS over TLS"]
         N1["node r5.xlarge<br/>4 vCPU / 32 GiB"]
         N2["node r5.xlarge<br/>4 vCPU / 32 GiB"]
         N3["node r5.xlarge<br/>4 vCPU / 32 GiB"]
@@ -72,9 +72,9 @@ flowchart TB
 - Kubernetes Service: load-balances across both engine Pods on port 9031; admin traffic is not part of the test.
 - PingFederate engines: run the measured path — JWKS fetch and caching, JWT validation, token-exchange policy, output-token signing.
 - PingFederate admin: configures the engines through cluster replication and stays idle.
-- perf-jwks-server: a small nginx Pod serving the subject-token verification JWKS over HTTP; the engines fetch and cache it — this is the issuer side of the key-distribution path.
+- perf-jwks-server: a small nginx Pod serving the subject-token verification JWKS over HTTPS (self-signed cert imported into the engines' JVM truststore); the engines fetch and cache it — this is the issuer side of the key-distribution path.
 
-Each exchange is a production-shaped RFC 8693 request: `client_secret_basic` authentication, a self-contained JWT subject token, the token-exchange policy, and an RS256-signed output token. The engines validate the subject token's signature, issuer, audience, and expiry against a JWKS they fetch over HTTP from an in-cluster key-publishing Pod — a small nginx Pod (`perf-jwks-server`) deployed as its own release before PingFederate starts, so the key source never disappears with the load-test release. That is the issuer-publishes/verifier-fetches key distribution production uses, with PingFederate's JWKS fetch, caching, and refresh on the measured path instead of embedded key material. (The Pod was introduced after this campaign ran: the measured stages validated against the same JWKS embedded in the engine config. Per request the work is identical — validation always hits PingFederate's local JWKS cache — so the numbers carry over.) Deliberately excluded: user authentication (subject tokens are self-signed by the generator — no IdP round-trip), persistent-grant storage (the client is grant-only `TOKEN_EXCHANGE`, so the store is never touched), and external policy calls. The results are a floor for real deployments; those add storage-backed steps on top.
+Each exchange is a production-shaped RFC 8693 request: `client_secret_basic` authentication, a self-contained JWT subject token, the token-exchange policy, and an RS256-signed output token. The engines validate the subject token's signature, issuer, audience, and expiry against a JWKS they fetch over HTTPS from an in-cluster key-publishing Pod — a small nginx Pod (`perf-jwks-server`) deployed as its own release before PingFederate starts, so the key source never disappears with the load-test release. That is the issuer-publishes/verifier-fetches key distribution production uses, with PingFederate's JWKS fetch, caching, and refresh on the measured path instead of embedded key material. Deliberately excluded: user authentication (subject tokens are self-signed by the generator — no IdP round-trip), persistent-grant storage (the client is grant-only `TOKEN_EXCHANGE`, so the store is never touched), and external policy calls. The results are a floor for real deployments; those add storage-backed steps on top.
 
 Here is one measured exchange — every k6 iteration performs exactly this. Secrets are redacted; tokens are truncated for print.
 
@@ -156,7 +156,7 @@ The PingFederate side is fully declarative: a server profile carries all require
 
 ## Test stages and environment
 
-The campaign ran four stages, each five minutes at a constant arrival rate with a 30-second warmup excluded from the measured series: 100 exchanges per second (first with 2 agents, then the full 10), then 250 and 500. Each agent Pod drives total-rate/10 arrivals per second — at the 500 stage, 10 Pods × 50 = 500. The constant-arrival-rate executor opens each request on schedule regardless of response time, so it measures latency under controlled arrival, not throughput at saturation. The measured window delivered exactly what was configured: 500.05 exchanges per second.
+The campaign ran three stages, each five minutes at a constant arrival rate with a 30-second warmup excluded from the measured series: 100, 250, and 500 exchanges per second, in ascending order against the same continuously warmed engines. Each agent Pod drives total-rate/10 arrivals per second — at the 500 stage, 10 Pods × 50 = 500. The constant-arrival-rate executor opens each request on schedule regardless of response time, so it measures latency under controlled arrival, not throughput at saturation. Each stage delivered essentially its configured rate: 99.8, 249.7, and 499.2 exchanges per second in the measured windows.
 
 The environment, in full:
 
@@ -177,7 +177,7 @@ Engines carry a preferred anti-affinity rule for different nodes and a PodDisrup
 
 ## The results
 
-Across the four stages: 285,030 token exchanges, 100% success, all thresholds passed. Not one failed or malformed OAuth response in the entire campaign.
+Across the three stages: 255,024 token exchanges, 100% success, zero dropped iterations, all thresholds passed. Not one failed or malformed OAuth response in the entire campaign.
 
 ### Latency by stage
 
@@ -185,39 +185,37 @@ Measured phase only, warmup excluded:
 
 | Stage | Delivered rate | Requests | avg | median | p90 | p95 | p99 |
 |---|---:|---:|---:|---:|---:|---:|---:|
-| 100/s (2 agents) | 100.0/s | 30,002 | 4.6 ms | 4.3 ms | 5.7 ms | 6.6 ms | — |
-| 100/s (10 agents) | 100.0/s | 30,005 | 5.2 ms | 4.7 ms | 6.4 ms | 8.1 ms | — |
-| 250/s | 250.0/s | 75,008 | 6.7 ms | 5.5 ms | 10.2 ms | 13.4 ms | 26.4 ms |
-| 500/s | 500.0/s | 150,015 | 9.4 ms | 6.9 ms | 17.6 ms | 22.6 ms | 36.0 ms |
+| 100/s | 99.8/s | 30,007 | 6.0 ms | 5.3 ms | 8.1 ms | 9.6 ms | 14.7 ms |
+| 250/s | 249.7/s | 75,008 | 5.4 ms | 4.8 ms | 6.9 ms | 8.1 ms | 13.4 ms |
+| 500/s | 499.2/s | 150,009 | 5.6 ms | 5.0 ms | 7.3 ms | 9.1 ms | 14.9 ms |
 
-Latency scales gently and almost linearly through the tested range. Going from 100 to 250 exchanges per second costs one and a half milliseconds of average latency; doubling to 500 roughly doubles the p95 and still leaves it under 23 milliseconds.
+Latency is essentially flat across the tested range: the p95 stays between 8 and 10 milliseconds from 100 to 500 exchanges per second, and the p99 never leaves double digits.
 
 ### Latency and CPU over time at 500 exchanges per second
 
-The two charts below are the report generator's time-series output for the 500 stage. Both are snapshots in time: the axis labels are baked in at publication, and the axis units are raw report values (milliseconds for response time, milli-cores for CPU).
+The two charts below are the report generator's time-series output. Both are snapshots in time: the axis labels are baked in at publication, and the axis units are raw report values (milliseconds for response time, milli-cores for CPU).
 
-![Response time p90 over time at the 500-per-second stage. After the warmup, the p90 flatlines around 19 milliseconds and stays there for the rest of the run.](/assets/img/pf-token-exchange-500rps-p90.svg){: .img-fluid }
+![Response time p90 over time at the 500-per-second stage. After the warmup, the p90 hovers between 6 and 8 milliseconds with brief one-second spikes, and stays there for the rest of the run.](/assets/img/pf-token-exchange-500rps-p90.svg){: .img-fluid }
 
-After the run settles, the p90 flatlines around 19 milliseconds for the rest of the five minutes. No drift, no creep, no gradual degradation.
+After the run settles, the p90 hovers between 6 and 8 milliseconds with brief one-second spikes into the low teens, peaking at 17. No drift, no creep, no gradual degradation.
 
-![Combined engine CPU of both PingFederate engine Pods during the 500-per-second stage, stacked per Pod.](/assets/img/pf-te-500rps-engine-cpu.svg){: .img-fluid }
+![Combined engine CPU of both PingFederate engine Pods during the 100-per-second stage, stacked per Pod.](/assets/img/pf-te-500rps-engine-cpu.svg){: .img-fluid }
 
-Combined engine CPU holds steady at about 2.9 cores — the chart's 2,900 milli-cores — with each Pod under 1.8 of its four-core limit. At this load PingFederate is running well inside its comfort zone, at a stable price.
+The second chart shows combined engine CPU during the 100-per-second stage — the one stage whose resource samples survived to the report. Combined engine CPU holds steady at roughly 0.5 of a core. At this load PingFederate is barely warm, at a stable price.
 
 ### Resource consumption
 
-Steady-state combined engine CPU and the CPU cost per exchange:
+Steady-state combined engine CPU at the monitored stage and the CPU cost per exchange:
 
 | Delivered rate | Engine CPU avg | Engine CPU peak | CPU per exchange |
 |---:|---:|---:|---:|
-| 250/s | 1.48 cores | 2.13 cores | 5.9 CPU-ms |
-| 500/s | 2.91 cores | 3.01 cores | 5.8 CPU-ms |
+| 100/s | 0.53 cores | 0.57 cores | 5.3 CPU-ms |
 
-The last column is engine CPU divided by exchange rate — how much of one core's time one exchange consumes. It sits at close to six CPU-milliseconds at every stage, which makes capacity arithmetic trivial: multiply your target exchange rate by six milliseconds. Memory is a non-story: engine Pods sat at about 0.7 GiB per Pod at 250 exchanges per second and about 1.1 GiB at 500, well under the 3 GiB request — there is no per-session state to grow.
+The last column is engine CPU divided by exchange rate — how much of one core's time one exchange consumes. At about five CPU-milliseconds, capacity arithmetic stays trivial: multiply your target exchange rate by five to six milliseconds. Memory is a non-story: engine Pods sat between 0.7 and 2.1 GiB — the difference is JVM heap churn, not session state, and both are well under the 3 GiB request — there is no per-session state to grow.
 
 ### What an agent platform actually needs
 
-Compare the tested range against a realistic deployment. A medium-sized organization: 1,000 employees, ~10% concurrently active in the agent at peak, so ~100 users. Each action fans out to four or five MCP servers in different trust domains; every trust boundary costs one exchange — call it six per action. At 10 actions per minute per active user: 100 × 10 × 6 / 60 = 100 exchanges per second. That is a fifth of what this starter sizing absorbed at a 23 ms p95 — and the cost is per action, not per LLM call inside the reasoning loop.
+Compare the tested range against a realistic deployment. A medium-sized organization: 1,000 employees, ~10% concurrently active in the agent at peak, so ~100 users. Each action fans out to four or five MCP servers in different trust domains; every trust boundary costs one exchange — call it six per action. At 10 actions per minute per active user: 100 × 10 × 6 / 60 = 100 exchanges per second. That is a fifth of what this starter sizing absorbed at a 9 ms p95 — and the cost is per action, not per LLM call inside the reasoning loop.
 
 ## When the concern is valid
 
@@ -231,7 +229,7 @@ What this test does not prove:
 
 The headline is simple: token exchange adds almost nothing to what the user experiences. An LLM reasoning step takes seconds; an agent loop takes tens of seconds; the token-exchange hop is milliseconds. The identity hop is effectively invisible next to the intelligence hop.
 
-That is the point to carry into architecture discussions. Exchange once per trust boundary, keep subject tokens self-contained JWTs so validation needs no store lookup, size engines at roughly one core per 170 sustained exchanges per second — and then stop worrying about the token-exchange hop. The thing to optimize in an agentic platform is the reasoning loop; the identity layer is not where the time goes.
+That is the point to carry into architecture discussions. Exchange once per trust boundary, keep subject tokens self-contained JWTs so validation needs no store lookup, size engines at roughly one core per 180 sustained exchanges per second — and then stop worrying about the token-exchange hop. The thing to optimize in an agentic platform is the reasoning loop; the identity layer is not where the time goes.
 
 ---
 
