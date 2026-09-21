@@ -28,7 +28,7 @@ This is the first article in a series exploring how PingAuthorize can centralize
 
 I start with **Azure API Management (APIM)** protecting an MCP server, while future articles will apply the same model to other enforcement points such as AWS AgentCore Gateway.
 
-> **Deployment note:** This series uses the PingAuthorize software, deployed in your own environment. PingAuthorize is also available as a cloud-delivered service (PingOne Authorize). The integration component and logic described here — a PEP that sends context to the PDP and enforces the decision — is the same regardless of where the PDP runs.
+> **Deployment note:** This series uses the PingAuthorize software, deployed in your own environment. PingAuthorize is also available as a cloud-delivered service (PingOne Authorize). The integration described here uses the **Sideband API**, a protocol shared by both products: the same policy fragment works against either deployment — only the endpoint base URL and the shared credential change.
 
 ## What Problem PingAuthorize solves: Sprawl Across Hybrid Environments
 
@@ -50,7 +50,9 @@ PingAuthorize solves those challenges by centralizing **policy evaluation**: it 
 
 ## The solution
 
-The first implementation in this series protects a demo Customer MCP Server using Azure API Management. I will present how APIM can be extended via an APIM Policy Fragment that extracts the MCP call details, calls PingAuthorize for a policy decision and returns a decision (PERMIT/DENY) to APIM, which enforces it.
+The first implementation in this series protects a demo Customer MCP Server using Azure API Management. APIM is extended via an APIM Policy Fragment that forwards the entire original MCP request to the PingAuthorize Sideband API, and then either forwards the call to the MCP server or relays the authorization denial to the caller.
+
+The Sideband API is a reverse-proxy authorization interface: instead of sending a distilled authorization request, the enforcement point sends the original HTTP traffic — method, URL, headers, and body — to the PDP, which evaluates policy against the raw request context and returns the decision.
 
 The following diagram depicts the components in the implementation and their interactions.
 
@@ -62,189 +64,253 @@ flowchart LR
 
     subgraph AZURE["Azure APIM"]
         APIM["Azure API Management\nMCP endpoint"]
-        FRAG["APIM Policy Fragment"]
+        FRAG["APIM Policy Fragment\nSideband PEP"]
     end
 
     subgraph PING["PingAuthorize"]
-        P1AZ["PingAuthorize\nDecision Endpoint"]
+        SB["Sideband API\n/sideband/request"]
     end
 
     C -->|"MCP tools/call\n(Agent Access Token - delegated)"| APIM
     APIM --> FRAG
-    FRAG -->|"Tool Calls \n(MCP, Tool, Tool Arguments, APIM Token)"| P1AZ
-    P1AZ -->|"PERMIT / DENY"| FRAG
+    FRAG -->|"Sideband request\n(method, URL, headers, body)"| SB
+    SB -->|"200 without response object\nPERMIT"| FRAG
+    SB -->|"200 with response object\nDENY (status + WWW-Authenticate)"| FRAG
     FRAG --> APIM
-    APIM -->|"tools/call if PERMIT \n(JSON/RPC payload, Backend Access Token)"| MCP
+    APIM -->|"tools/call if PERMIT\n(JSON/RPC payload)"| MCP
 ```
 
 - **Agent** — invokes MCP tools through APIM using an Agent Access Token (typically obtained via Token Exchange).
-- **Azure API Management** — acts as the Policy Enforcement Point. Receives the MCP request, runs the policy fragment, and either forwards the call to the backend MCP or returns a 403.
-- **APIM Policy Fragment** — a reusable APIM policy artifact that parses the MCP request, calls the PingAuthorize decision endpoint, and enforces the returned decision. To call the decision endpoint it fetches its own PingAuthorize access token.
-- **PingAuthorize** — acts as the Policy Decision Point. Receives the authorization context and returns PERMIT or DENY.
+- **Azure API Management** — acts as the Policy Enforcement Point. Receives the MCP request, runs the policy fragment, and either forwards the call to the backend MCP or relays the denial.
+- **APIM Policy Fragment** — a reusable APIM policy artifact that preserves the original request, wraps it in a Sideband request envelope, calls the PingAuthorize Sideband API with a shared secret, and enforces the returned decision. It performs no OAuth flows of its own.
+- **PingAuthorize Sideband API** — acts as the Policy Decision Point. Receives the original request, evaluates policy over the full HTTP context, and either allows the call through (no response object) or returns a complete denial response for the PEP to relay.
 - **Protected MCP** — the protected MCP server (in our context a demo Customer MCP), receives requests only after APIM allows them through.
 
-The important boundary is that APIM does not contain the business authorization logic. It collects context, asks for a decision, and enforces the result.
+The important boundary is that APIM does not contain the business authorization logic. It forwards the raw request, and enforces whatever comes back.
 
 > **Scope note:** This article focuses on the authorization integration between APIM and PingAuthorize. Token validation, token exchange, and backend MCP server security are outside the scope of this article. In a production setup, APIM would exchange the inbound token for a backend-scoped token before calling the MCP server. For simplicity, the demo MCP server is left open and no token exchanges have been configured in APIM.
+
+## The Sideband Integration Model
+
+A common alternative is a decision endpoint: the PEP parses the request, extracts relevant attributes into a custom payload, and asks the PDP for a decision. That works, but the mapping logic — which fields matter, how they are named and serialized — lives in the PEP and must be kept in sync with the policies.
+
+The Sideband API removes that mapping layer. The PEP sends the original request as it arrived, and PingAuthorize evaluates policy against the full HTTP context: request method, URL, headers (including the `Authorization` bearer token and its claims), query parameters, client IP, and the request body. If a new policy needs a request field that was not previously forwarded, there is no PEP change to make — the data is already there.
+
+The integration follows three rules:
+
+1. **Permit** — the PDP returns HTTP 200 with no top-level `response` object. The PEP continues to the backend.
+2. **Deny** — the PDP returns HTTP 200 with a top-level `response` object containing a complete response to hand back to the client: status code, reason, headers (including `WWW-Authenticate`), and body.
+3. **Fail closed** — any transport failure or non-200 result is an integration error, never an access grant.
+
+This split also has a security benefit for authentication: a denial can carry a `401` with a `WWW-Authenticate` challenge (token invalid or a step-up required) instead of a generic `403`, so the client can react to authentication and authorization failures differently.
 
 ## The APIM Policy Fragment
 
 The integration with PingAuthorize is implemented directly as an APIM policy fragment. The fragment performs four operations:
 
-1. Parse the MCP request.
-2. Obtain an OAuth token that allows the policy fragment to call PingAuthorize.
-3. Call the PingAuthorize Decision Endpoint.
+1. Preserve the MCP request.
+2. Build the Sideband request envelope.
+3. Call the PingAuthorize Sideband API.
 4. Enforce the returned decision.
 
+The fragment is driven by three APIM Named Values:
 
-### 1. Parse the MCP Request
+| Named Value | Type | Purpose |
+|---|---|---|
+| `AuthorizeSidebandRequestEndpoint` | Plain | Base URL of the Sideband API **without** `/sideband/request`. Example for PingAuthorize software: `https://paz.example.com:7443`. Example for PingOne Authorize (cloud): the gateway Service URL, such as `https://http-access-api.pingone.eu/v1/environments/{environmentId}`. |
+| `AuthorizeSidebandClientToken` | **Secret** | The sideband shared secret — the Sideband API shared secret configured on PingAuthorize, or the gateway credential on PingOne Authorize. |
+| `AuthorizeSidebandDebug` | Plain | `false` by default. Set to `true` temporarily to return a redacted Sideband request and the complete authorization response to the API client for diagnostics. |
 
-The first part reads the JSON-RPC body and preserves it so APIM can still forward the original request to the MCP server.
+### 1. Preserve the MCP Request
+
+The Sideband API requires the original body as a string, so the fragment reads it before anything else and preserves it for later forwarding:
 
 ```xml
 <set-variable
-    name="mcp"
-    value="@(context.Request.Body.As<JObject>(preserveContent:true))" />
+    name="authorizeOriginalRequestBody"
+    value="@(context.Request.Body == null
+        ? string.Empty
+        : context.Request.Body.As&lt;string&gt;(preserveContent: true))" />
+```
 
-<set-variable
-    name="method"
-    value="@((string)((JObject)context.Variables["mcp"])["method"])" />
+### 2. Build the Sideband Request Envelope
 
-<set-variable
-    name="tool"
-    value="@((string)((JObject)context.Variables["mcp"])["params"]?["name"])" />
+The envelope mirrors the original request. APIM rebuilds the full request URL (scheme, host, optional port, path, query string), and collects the headers as an array of single-entry objects — the shape the Sideband API expects. The `Authorization` header carries the agent's bearer token unchanged, which is what lets PingAuthorize validate and inspect the caller's token.
 
-<set-variable
-    name="arguments"
-    value="@(((JObject)context.Variables["mcp"])["params"]?["arguments"]?.ToString())" />
+```xml
+<set-variable name="authorizeSidebandRequestBody" value="@{
+    var originalUrl = context.Request.OriginalUrl;
+    var scheme = originalUrl.Scheme.ToLowerInvariant();
+    var includePort = (scheme == &quot;http&quot; &amp;&amp; originalUrl.Port != 80) ||
+                      (scheme == &quot;https&quot; &amp;&amp; originalUrl.Port != 443);
+    var requestUrl = originalUrl.Scheme + &quot;://&quot; +
+                     originalUrl.Host +
+                     (includePort ? &quot;:&quot; + originalUrl.Port.ToString() : string.Empty) +
+                     originalUrl.Path +
+                     originalUrl.QueryString;
 
-<set-variable
-    name="requestId"
-    value="@(((JObject)context.Variables["mcp"])["id"]?.ToString())" />
+    var sidebandHeaders = new JArray();
+    sidebandHeaders.Add(new JObject(new JProperty(&quot;Accept&quot;, &quot;application/json&quot;)));
+    sidebandHeaders.Add(new JObject(new JProperty(&quot;Content-Type&quot;, &quot;application/json&quot;)));
+    sidebandHeaders.Add(new JObject(new JProperty(&quot;Host&quot;,
+        originalUrl.Host +
+        (includePort ? &quot;:&quot; + originalUrl.Port.ToString() : string.Empty))));
+    sidebandHeaders.Add(new JObject(new JProperty(&quot;Authorization&quot;,
+        context.Request.Headers.GetValueOrDefault(&quot;Authorization&quot;, string.Empty))));
 
-<set-variable name="incomingBearer" value="@{
-    var auth = context.Request.Headers.GetValueOrDefault(
-        &quot;Authorization&quot;,
-        &quot;&quot;
+    var serializedBody =
+        (string)context.Variables[&quot;authorizeOriginalRequestBody&quot;];
+
+    if (!string.IsNullOrEmpty(serializedBody))
+    {
+        try
+        {
+            serializedBody = JToken.Parse(serializedBody)
+                .ToString(Newtonsoft.Json.Formatting.None);
+        }
+        catch
+        {
+            // Preserve a non-JSON body exactly as received.
+        }
+    }
+
+    var payload = new JObject(
+        new JProperty(&quot;source_ip&quot;, context.Request.IpAddress ?? string.Empty),
+        new JProperty(&quot;source_port&quot;, 5034),
+        new JProperty(&quot;method&quot;, context.Request.Method),
+        new JProperty(&quot;url&quot;, requestUrl),
+        new JProperty(&quot;http_version&quot;, &quot;1.1&quot;),
+        new JProperty(&quot;headers&quot;, sidebandHeaders),
+        new JProperty(&quot;body&quot;, serializedBody)
     );
 
-    return auth.StartsWith(
-        &quot;Bearer &quot;,
-        StringComparison.OrdinalIgnoreCase
-    )
-        ? auth.Substring(7)
-        : &quot;&quot;;
+    return payload.ToString(Newtonsoft.Json.Formatting.None);
 }" />
 ```
 
-APIM now has the method, tool name, arguments, request ID, and incoming bearer token available as policy variables.
+One field deserves an explanation. APIM policy expressions cannot access the originating TCP source port, but the Sideband API requires a `source_port` value between 1 and 65535. The fragment therefore uses a fixed synthetic value (`5034`), matching the reference implementation the fragment was modeled on. If your policies need the real client port, this is a known limitation to plan around.
 
-### 2. Obtain a PingAuthorize Access Token
+### 3. Call the Sideband API
 
-To call the PingAuthorize decision endpoint APIM obtains an access token using OAuth 2.0 Client Credentials.
-
-```xml
-<send-request
-    mode="new"
-    response-variable-name="tokenResponse"
-    timeout="20"
-    ignore-error="false">
-
-    <set-url>{{PingAuthorizeTokenUrl}}</set-url>
-    <set-method>POST</set-method>
-
-    <set-header name="Authorization" exists-action="override">
-        <value>@{
-            var clientId = "{{PingAuthorizeClientId}}";
-            var clientSecret = "{{PingAuthorizeClientSecret}}";
-
-            return "Basic " +
-                Convert.ToBase64String(
-                    System.Text.Encoding.UTF8.GetBytes(
-                        clientId + ":" + clientSecret
-                    )
-                );
-        }</value>
-    </set-header>
-
-    <set-header name="Content-Type" exists-action="override">
-        <value>application/x-www-form-urlencoded</value>
-    </set-header>
-
-    <set-body>grant_type=client_credentials&amp;scope=openid</set-body>
-
-</send-request>
-
-<set-variable
-    name="accessToken"
-    value="@(
-        (string)(
-            (IResponse)context.Variables["tokenResponse"]
-        ).Body.As<JObject>()["access_token"]
-    )" />
-```
-
-This implementation requests a new token for every authorization call to make the flow easy to understand. In production, the token should be cached using APIM policies such as `cache-lookup-value` and `cache-store-value`, and refreshed shortly before expiration.
-
-### 3. Call PingAuthorize
-
-APIM now sends the authorization context to the PingAuthorize Decision Endpoint.
+The fragment posts the envelope to `{endpoint}/sideband/request`, authenticating with the shared secret in the `PDG-TOKEN` header:
 
 ```xml
 <send-request
     mode="new"
-    response-variable-name="p1azResponse"
+    response-variable-name="authorizeSidebandResponse"
     timeout="20"
-    ignore-error="false">
+    ignore-error="true">
 
-    <set-url>{{PingAuthorizeDecisionEndpoint}}</set-url>
+    <set-url>@(&quot;{{AuthorizeSidebandRequestEndpoint}}&quot;.TrimEnd('/') + &quot;/sideband/request&quot;)</set-url>
     <set-method>POST</set-method>
 
-    <set-header name="Authorization" exists-action="override">
-        <value>@("Bearer " + (string)context.Variables["accessToken"])</value>
+    <set-header name="PDG-TOKEN" exists-action="override">
+        <value>{{AuthorizeSidebandClientToken}}</value>
     </set-header>
 
     <set-header name="Content-Type" exists-action="override">
         <value>application/json</value>
     </set-header>
 
-    <set-body>@{
-        var attributes = new JObject();
+    <set-header name="Accept" exists-action="override">
+        <value>application/json</value>
+    </set-header>
 
-        attributes["Service"]        = (string)context.Variables["pazService"];
-        attributes["Method"]         = (string)context.Variables["method"];
-        attributes["Bearer Token"]   = (string)context.Variables["incomingBearer"];
-        attributes["Request Id"]     = (string)context.Variables["requestId"];
-
-        var tool = (string)context.Variables["tool"];
-        if (!string.IsNullOrEmpty(tool))
-        {
-            attributes["Tool"] = tool;
-        }
-
-        var args = (string)context.Variables["arguments"];
-        if (!string.IsNullOrEmpty(args))
-        {
-            var argsObj = JObject.Parse(args);
-            foreach (var prop in argsObj.Properties())
-            {
-                attributes[prop.Name] =
-                    prop.Value.ToString();
-            }
-        }
-
-        return new JObject(
-            new JProperty("service", "customer-mcp"),
-            new JProperty("action", "Execute"),
-            new JProperty("attributes", attributes)
-        ).ToString();
-    }</set-body>
-
+    <set-body>@((string)context.Variables["authorizeSidebandRequestBody"])</set-body>
 </send-request>
 ```
 
+The credential header name is part of the Sideband API configuration, so it must match what your PingAuthorize Sideband API endpoint expects — `PDG-TOKEN` here, `CLIENT-TOKEN` in some other integrations.
 
-For an MCP request such as:
+Note that unlike a decision-endpoint integration, the fragment does **not** fetch an OAuth token. The shared secret authenticates the PEP to the PDP directly, which removes an entire token-acquisition round trip (and the token-caching policies that production would otherwise require).
+
+### 4. Enforce the Decision
+
+First, fail closed on transport problems. A failed call leaves the response variable empty:
+
+```xml
+<choose>
+    <when condition="@(!context.Variables.ContainsKey(&quot;authorizeSidebandResponse&quot;)
+        || context.Variables[&quot;authorizeSidebandResponse&quot;] == null)">
+        <return-response>
+            <set-status code="502" reason="Bad Gateway" />
+            <set-header name="Content-Type" exists-action="override">
+                <value>application/json</value>
+            </set-header>
+            <set-body>@{
+                return new JObject(
+                    new JProperty("error",
+                        new JObject(
+                            new JProperty("code", "sideband-unavailable"),
+                            new JProperty("message",
+                                "Authorization Sideband service is unavailable")
+                        )
+                    )
+                ).ToString();
+            }</set-body>
+        </return-response>
+    </when>
+</choose>
+```
+
+A non-200 status is also an integration error — not an authorization denial — and returns `502` with a `sideband-error` code.
+
+With HTTP 200 in hand, the semantics are simple: a top-level `response` object means DENY; its absence means PERMIT.
+
+```xml
+<set-variable
+    name="authorizeSidebandBody"
+    value="@(((IResponse)context.Variables[&quot;authorizeSidebandResponse&quot;])
+        .Body.As&lt;JObject&gt;(preserveContent: true))" />
+
+<choose>
+    <when condition="@(((JObject)context.Variables[&quot;authorizeSidebandBody&quot;])[&quot;response&quot;] is JObject)">
+        <!-- DENY: extract the relay fields from the response object -->
+    </when>
+</choose>
+
+<!-- No response object means PERMIT; continue to the backend unchanged. -->
+```
+
+On denial, the fragment extracts `response_code`, `response_status`, the response headers (looking for `content-type` and `www-authenticate`), and the body, then relays them to the caller. The status is the authorization service's own decision — `401` for authentication failures or step-up, `403` for authorization failures — not a status APIM invented:
+
+```xml
+<set-variable name="authorizeDenyStatus" value="@{
+    var denial = ((JObject)context.Variables[&quot;authorizeSidebandBody&quot;])[&quot;response&quot;];
+    int status;
+
+    return Int32.TryParse((string)denial[&quot;response_code&quot;], out status)
+        &amp;&amp; status &gt;= 100 &amp;&amp; status &lt;= 599
+            ? status
+            : 403;
+}" />
+
+<set-variable name="authorizeDenyReason" value="@{
+    var denial = ((JObject)context.Variables[&quot;authorizeSidebandBody&quot;])[&quot;response&quot;];
+    return (string)denial[&quot;response_status&quot;] ?? &quot;Forbidden&quot;;
+}" />
+```
+
+The relayed body preserves the JSON-RPC envelope: the fragment reads the `id` from the original MCP request so the error correlates with the call, passes through the PDP's denial body when present, and otherwise synthesizes a JSON-RPC error (`-32001` for 401, `-32003` otherwise):
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 2,
+  "error": {
+    "code": -32003,
+    "message": "Forbidden"
+  }
+}
+```
+
+Finally, the denial is returned with the authorization service's status, reason, and `WWW-Authenticate` header when one was supplied.
+
+The fragment also supports a temporary diagnostics mode: when `{{AuthorizeSidebandDebug}}` is `true`, denials and integration errors return the redacted Sideband request (with `Authorization`, `Cookie`, and `Proxy-Authorization` headers masked) and the complete authorization response to the API client, which makes endpoint and payload mistakes obvious during setup. Remove it before production.
+
+## The Sideband Request
+
+For an MCP call such as:
 
 ```json
 {
@@ -260,109 +326,61 @@ For an MCP request such as:
 }
 ```
 
-The payload sent to PingAuthorize looks like:
+the Sideband request the fragment sends looks like:
 
 ```json
 {
-  "service": "customer-mcp",
-  "action": "Execute",
-  "attributes": {
-    "Service": "customer-mcp",
-    "Method": "tools/call",
-    "Bearer Token": "<incoming-access-token>",
-    "Request Id": "2",
-    "Tool": "get_customer",
-    "customerId": "CUST-10001"
-  }
+  "source_ip": "203.0.113.10",
+  "source_port": 5034,
+  "method": "POST",
+  "url": "https://apim.example.com/customer-mcp",
+  "http_version": "1.1",
+  "headers": [
+    { "Accept": "application/json" },
+    { "Content-Type": "application/json" },
+    { "Host": "apim.example.com" },
+    { "Authorization": "Bearer <agent-access-token>" }
+  ],
+  "body": "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"get_customer\",\"arguments\":{\"customerId\":\"CUST-10001\"}}}"
 }
 ```
 
-The `attributes` map is a flat map of string keys to string values. The keys shown here (`Service`, `Method`, `Bearer Token`, `Request Id`, `Tool`) are Trust Framework attribute names defined in the PingAuthorize Policy Designer — the keys you send must match the attribute names configured there exactly.
-### 4. Enforce the Decision
+The same call can be reproduced with `curl`, which is exactly how the reference test client exercises the endpoint:
 
-The final section reads the response from PingAuthorize.
-
-```xml
-<set-variable
-    name="p1az"
-    value="@(
-        ((IResponse)context.Variables["p1azResponse"])
-            .Body.As<JObject>()
-    )" />
-
-<set-variable
-    name="decision"
-    value="@(
-        (string)(
-            (JObject)context.Variables["p1az"]
-        )["decision"]
-    )" />
+```bash
+curl -s "https://paz.example.com:7443/sideband/request" \
+  -H "PDG-TOKEN: $SIDEBAND_CREDENTIAL" \
+  -H "Content-Type: application/json" \
+  -H "Accept: application/json" \
+  -d '{
+    "source_ip": "203.0.113.10",
+    "source_port": 5034,
+    "method": "POST",
+    "url": "https://apim.example.com/customer-mcp",
+    "http_version": "1.1",
+    "headers": [
+      { "Accept": "application/json" },
+      { "Content-Type": "application/json" },
+      { "Host": "apim.example.com" },
+      { "Authorization": "Bearer <agent-access-token>" }
+    ],
+    "body": "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"get_customer\",\"arguments\":{\"customerId\":\"CUST-10001\"}}}"
+  }'
 ```
 
-If the decision is `PERMIT`, APIM continues processing the request and forwards it to the MCP server. Anything else is treated as a denial.
+A PERMIT returns HTTP 200 with no `response` object; a DENY returns HTTP 200 with one:
 
-```xml
-<choose>
-    <when condition="@(
-        !&quot;PERMIT&quot;.Equals(
-            (string)context.Variables[&quot;decision&quot;],
-            StringComparison.OrdinalIgnoreCase
-        )
-    )">
-
-        <set-variable name="errorCode" value="@{
-            var body = (JObject)context.Variables["p1az"];
-            var statements = body["statements"] as JArray;
-
-            if (statements == null || statements.Count == 0)
-            {
-                return "access-denied";
-            }
-
-            return (string)statements[0]["code"] ?? "access-denied";
-        }" />
-
-        <set-variable name="errorMessage" value="@{
-            var body = (JObject)context.Variables["p1az"];
-            var statements = body["statements"] as JArray;
-
-            if (statements == null || statements.Count == 0)
-            {
-                return "Access denied";
-            }
-
-            return (string)statements[0]["payload"] ?? "Access denied";
-        }" />
-
-        <return-response>
-            <set-status code="403" reason="Forbidden" />
-
-            <set-header name="Content-Type" exists-action="override">
-                <value>application/json</value>
-            </set-header>
-
-            <set-body>@{
-                return new JObject(
-                    new JProperty(
-                        "error",
-                        new JObject(
-                            new JProperty(
-                                "code",
-                                (string)context.Variables["errorCode"]
-                            ),
-                            new JProperty(
-                                "message",
-                                (string)context.Variables["errorMessage"]
-                            )
-                        )
-                    )
-                ).ToString();
-            }</set-body>
-
-        </return-response>
-
-    </when>
-</choose>
+```json
+{
+  "response": {
+    "response_code": 403,
+    "response_status": "Forbidden",
+    "headers": [
+      { "Content-Type": "application/json" }
+    ],
+    "body": "{\"jsonrpc\":\"2.0\",\"id\":2,\"error\":{\"code\":-32003,\"message\":\"Forbidden\"}}"
+  }
+}
 ```
 
 ## Policies
@@ -382,30 +400,36 @@ The inbound token is obtained by the agent via token exchange. It carries both a
 }
 ```
 
-PingAuthorize uses the inbound `service` field to identify the policy set to apply and evaluates the following:
+In sideband mode, PingAuthorize receives the original request and exposes its HTTP context to policies: request method, URI, headers, query parameters, client IP, the request body, and the claims of the bearer token in the `Authorization` header. Policies therefore evaluate the following:
 
-1. **Token validity** — validates the token signature and checks expiration.
-2. **Issuer check** — the issuer claim from the `Bearer Token` attribute must match the expected issuer.
-3. **Audience check** — the audience claim from the `Bearer Token` attribute must include the expected service audience (`customer-mcp`).
-4. **Scope check** — the scope claim from the `Bearer Token` attribute must include the scope required for the called tool.
-5. **Actor authorization** — the actor claim (`act.sub`) from the `Bearer Token` attribute (the agent) must be permitted to invoke the tool.
-6. **Subject authorization** — the subject claim (`sub`) from the `Bearer Token` attribute (the user) must hold a role that permits the tool call (for example, `customer_agent` for `get_customer`). In this example we use the concept of a role, but any further logic can be implemented (attribute-based, entitlements lookup, etc.)
+1. **Token validity** — validates the bearer token from the `Authorization` header: signature and expiration.
+2. **Issuer check** — the token issuer must match the expected issuer.
+3. **Audience check** — the token audience must include the expected service audience (`customer-mcp`).
+4. **Scope check** — the token scope must include the scope required for the called tool.
+5. **Actor authorization** — `act.sub` (the agent) must be permitted to invoke the tool.
+6. **Subject authorization** — `sub` (the user) must hold a role that permits the tool call (for example, `customer_agent` for `get_customer`). In this example we use the concept of a role, but any further logic can be implemented (attribute-based, entitlements lookup, etc.)
 7. **Business logic** — additional attribute-based or dynamic rules, such as risk thresholds, entitlement lookups or payload analysis and thresholds.
 
-In PingAuthorize, the bearer token is delivered as a string attribute and the policy extracts its claims. In PingOne Authorize (the cloud equivalent), token claims are resolved natively as `gateway.bearerToken.*` attributes.
+The JSON-RPC body is available as part of the request context, so rules can inspect the method, the tool name, and the tool arguments directly.
 
-The following picture shows what such a policy looks like in the PingAuthorize policy editor.
-![PingAuthorize policy — showing the rule set described above enforced for the customer-mcp service](/assets/img/pingone-authorize-policy-customer-mcp.png)
+The following picture shows what such a policy looks like in the policy designer (shown here in PingOne Authorize, the cloud counterpart of PingAuthorize).
+![Policy — showing the rule set described above enforced for the customer-mcp service](/assets/img/pingone-authorize-policy-customer-mcp.png)
 
-The following two pictures show how the PingAuthorize Decision Visualizer depicts its decisioning process. The first shows a PERMIT evaluation; the second shows a DENY due to an invalid actor subject.
-![PingAuthorize decision outcome — showing PERMIT with resolved attributes and statement details](/assets/img/pingone-authorize-policy-evaluation-success.png)
+The following two pictures show how the Decision Visualizer depicts its decisioning process. The first shows a PERMIT evaluation; the second shows a DENY due to an invalid actor subject.
+![Decision outcome — showing PERMIT with resolved attributes and statement details](/assets/img/pingone-authorize-policy-evaluation-success.png)
 
-![PingAuthorize decision outcome — showing DENY with resolved attributes and statement details](/assets/img/pingone-authorize-policy-evaluation-denied.png)
-
+![Decision outcome — showing DENY with resolved attributes and statement details](/assets/img/pingone-authorize-policy-evaluation-denied.png)
 
 ## Key Takeaways
 
-This article explained how PingAuthorize provides centralized dynamic authorization for Azure API Management. APIM acts as a Policy Enforcement Point for MCP servers without embedding business authorization rules in the gateway or in the protected MCP servers themselves. The policy fragment is the only integration artifact needed.
+This article explained how PingAuthorize provides centralized dynamic authorization for Azure API Management. APIM acts as a Policy Enforcement Point for MCP servers without embedding business authorization rules in the gateway or in the protected MCP servers themselves. The policy fragment is the only integration artifact needed, and because it speaks the Sideband API — shared between PingAuthorize software and PingOne Authorize in the cloud — the same artifact enforces the same policies against either deployment.
+
+Compared with a decision-endpoint integration, the sideband model keeps the PEP thin:
+
+- the PEP forwards the original request instead of mapping it into a custom payload, so no context-extraction logic lives in the gateway
+- the PEP authenticates with a shared secret instead of maintaining its own OAuth client and token cache
+- denials relay the PDP's status, challenge, and body verbatim, so authentication failures (`401` + `WWW-Authenticate`) stay distinguishable from authorization failures (`403`)
+- missing or unreachable PDP results in a fail-closed `502`, never silent access
 
 This pattern is most useful when:
 
@@ -414,14 +438,13 @@ This pattern is most useful when:
 - Compliance or audit requirements need a centralized, queryable record of every authorization decision regardless of where it was enforced.
 - Authorization rules depend on contextual or dynamic attributes — user roles, risk scores, time constraints — that must evolve independently of the applications that enforce them.
 
-
-The next articles will apply the same pattern to additional enforcement surfaces such as AWS API Gateway, further showing how authorization decisions can be centralized and standardized across platforms.
+The next articles will apply the same pattern to additional enforcement surfaces such as AWS AgentCore Gateway, further showing how authorization decisions can be centralized and standardized across platforms.
 
 ---
 
 **Resources**
 
-- [PingAuthorize](https://docs.pingidentity.com/pingauthorize/11.1/pingauthorize_server_administration_guide/paz_json_pdp_api_flow.html){:target="_blank"} — PingAuthorize JSON PDP API documentation.
+- [PingAuthorize Sideband API](https://docs.pingidentity.com/pingauthorize/11.1/pingauthorize_server_administration_guide/paz_about_sideband_api.html){:target="_blank"} — how the Sideband API proxies authorization decisions.
+- [Sideband API configuration](https://docs.pingidentity.com/pingauthorize/11.1/pingauthorize_server_administration_guide/paz_sideband_api_config.html){:target="_blank"} — configuring Sideband API endpoints and services on PingAuthorize.
 - [Azure API Management policies](https://learn.microsoft.com/en-us/azure/api-management/api-management-policies){:target="_blank"} — reference for APIM inbound policy expressions and `send-request`.
 - [Source code](https://github.com/carbonefederico/ai-mcp-gateways-paz-integrations) — APIM policy fragment and configuration guidelines.
-
