@@ -194,11 +194,11 @@ Across the three stages: 255,018 token exchanges, 100% success, zero dropped ite
 
 Measured phase only, warmup excluded:
 
-| Stage | Delivered rate | Requests | avg | median | p90 | p95 | p99 |
+| Stage | Target rate | Requests | avg | median | p90 | p95 | p99 |
 |---|---:|---:|---:|---:|---:|---:|---:|
-| 100/s | 100.0/s | 30,005 | 5.1 ms | 4.8 ms | 6.5 ms | 7.2 ms | 9.1 ms |
-| 250/s | 100.0/s | 75,006 | 5.1 ms | 4.7 ms | 6.6 ms | 7.3 ms | 10.2 ms |
-| 500/s | 100.0/s | 150,007 | 5.7 ms | 5.1 ms | 7.3 ms | 9.0 ms | 15.1 ms |
+| 100/s | 100.0% achieved | 30,005 | 5.1 ms | 4.8 ms | 6.5 ms | 7.2 ms | 9.1 ms |
+| 250/s | 100.0% achieved | 75,006 | 5.1 ms | 4.7 ms | 6.6 ms | 7.3 ms | 10.2 ms |
+| 500/s | 100.0% achieved | 150,007 | 5.7 ms | 5.1 ms | 7.3 ms | 9.0 ms | 15.1 ms |
 
 Latency is essentially flat across the tested range: the p95 stays between 7 and 9 milliseconds from 100 to 500 exchanges per second, and the p99 never leaves double digits at 100 and 250.
 
@@ -218,7 +218,7 @@ Combined engine CPU holds steady at about 2.5 cores, the busier Pod peaking at 1
 
 Steady-state combined engine CPU and the CPU cost per exchange:
 
-| Delivered rate | Engine CPU avg | Engine CPU peak | CPU per exchange |
+| Stage | Engine CPU avg | Engine CPU peak | CPU per exchange |
 |---:|---:|---:|---:|
 | 100/s | 0.52 cores | 0.56 cores | 5.2 CPU-ms |
 | 250/s | 1.23 cores | 1.33 cores | 4.9 CPU-ms |
