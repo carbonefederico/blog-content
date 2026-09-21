@@ -65,12 +65,87 @@ flowchart TB
     K1 -.-> N3
 ```
 
-- k6 agent Pods: every iteration signs a brand-new RS256 subject token and exchanges it exactly once — no token is reused, no two requests carry the same token. The 10 Pods simulate 10 concurrent agent instances acting on behalf of one pool of 100 synthetic user identities, rotating round-robin. In PingFederate there is exactly one OAuth client (`perf-test-client`); all ten Pods authenticate as it.
+- k6 agent Pods: every iteration signs a brand-new RS256 subject token and exchanges it exactly once — no token is reused, no two requests carry the same token. The 10 Pods simulate 10 concurrent agent instances acting on behalf of one pool of 100 synthetic user identities, rotating round-robin. In PingFederate each Pod authenticates as its own OAuth client — `perf-agent-0` through `perf-agent-9` — and the subject token's audience is the calling agent's client id.
 - Kubernetes Service: load-balances across both engine Pods on port 9031; admin traffic is not part of the test.
 - PingFederate engines: run the measured path — JWT validation, token-exchange policy, output-token signing.
 - PingFederate admin: configures the engines through cluster replication and stays idle.
 
 Each exchange is a production-shaped RFC 8693 request: `client_secret_basic` authentication, a self-contained JWT subject token validated against a JWKS (issuer, audience, expiry all checked from the token itself), the token-exchange policy, and an RS256-signed output token. Deliberately excluded: user authentication (subject tokens are self-signed by the generator — no IdP round-trip), persistent-grant storage (the client is grant-only `TOKEN_EXCHANGE`, so the store is never touched), and external policy calls. The results are a floor for real deployments; those add storage-backed steps on top.
+
+Here is one measured exchange — every k6 iteration performs exactly this. Secrets are redacted; tokens are truncated for print.
+
+Request (the subject token is signed by the load generator, RS256):
+
+```http
+POST /as/token.oauth2 HTTP/2
+Host: pf-pingfederate-engine:9031
+Authorization: Basic cGVyZi1hZ2VudC0wOjxwZXJmX2NsaWVudC1zZWNyZXQ->
+Content-Type: application/x-www-form-urlencoded
+
+grant_type=urn%3Aietf%3Aparams%3Aoauth%3Agrant-type%3Atoken-exchange
+&subject_token=eyJhbGciOiAiUlMyNTYiLCAidHlwIjogIkpXVCIs…[611 chars]
+&subject_token_type=urn%3Aietf%3Aparams%3Aoauth%3Atoken-type%3Aaccess_token
+&requested_token_type=urn%3Aietf%3Aparams%3Aoauth%3Atoken-type%3Aaccess_token
+&resource=https%3A%2F%2Fapi.example.com%2Finternal%2F
+```
+
+The subject token's claims (decoded):
+
+```json
+{
+  "iss": "https://pf-perf-subject",
+  "sub": "perf-user-001",
+  "aud": "perf-agent-0",
+  "iat": 1789977219,
+  "exp": 1789977519,
+  "jti": "readme-demo-2"
+}
+```
+
+Response:
+
+```http
+HTTP/2 200
+content-type: application/json
+
+{
+  "access_token": "eyJhbGciOiJSUzI1NiIsImtpZCI6ImVqT00tTU9X…[753 chars]",
+  "issued_token_type": "urn:ietf:params:oauth:token-type:access_token",
+  "token_type": "Bearer",
+  "expires_in": 299
+}
+```
+
+The issued access token is an RS256 `at+jwt` signed with PingFederate's centralized signing key. Header (decoded):
+
+```json
+{
+  "alg": "RS256",
+  "kid": "ejOM-MOWkc272nB1UwDyUGPasY4_RS256",
+  "pi.atm": "8dzf",
+  "typ": "at+jwt"
+}
+```
+
+Payload (decoded):
+
+```json
+{
+  "scope": "",
+  "authorization_details": [],
+  "client_id": "perf-agent-0",
+  "iss": "https://pf-pingfederate-engine",
+  "aud": "token-exchange-perf",
+  "iat": 1789977219,
+  "sub": "perf-user-001",
+  "act": {
+    "sub": "perf-agent-0"
+  },
+  "exp": 1789977519
+}
+```
+
+Reading the claims: `sub` is the subject user, taken from the subject token's `sub` through the token-exchange processor policy; `act.sub` is the **authenticated client id**, built by the access-token mapping from `context.ClientId` — the caller never sends actor material; `aud` is the access token manager's configured Audience Claim Value — the `resource=` parameter selects that token manager (RFC 8707) but does not become the audience; `exp - iat` is the token manager's 5-minute lifetime.
 
 The PingFederate side is fully declarative: a server profile carries all required objects as bulk-config JSON that the image imports at startup, and both engines are guaranteed identical configuration through cluster replication.
 
