@@ -42,6 +42,7 @@ flowchart TB
         subgraph LB["Load generation"]
             K1["k6 agent-0"]
             K2["k6 agent-1"]
+            KM["…"]
             K9["k6 agent-9"]
             JB["Kubernetes Job<br/>10 indexed completions"]
         end
@@ -57,8 +58,8 @@ flowchart TB
         JWKS["perf-jwks-server Pod<br/>nginx, serves subject-key JWKS over TLS"]
     end
 
-    JB --> K1 & K2 & K9
-    K1 & K2 & K9 -->|"token exchange<br/>POST /as/token.oauth2"| SVC
+    JB --> K1 & K2 & KM & K9
+    K1 & K2 & KM & K9 -->|"token exchange<br/>POST /as/token.oauth2"| SVC
     SVC --> ENG1 & ENG2
     ENG1 -.->|"JWKS fetch"| JWKS
     ENG2 -.->|"JWKS fetch"| JWKS
@@ -148,9 +149,9 @@ The PingFederate side is fully declarative: a server profile carries all require
 
 ## Test stages and environment
 
-The campaign ran three reference stages — 100, 250, and 500 exchanges per second — and repeated the whole ascending ladder three times (100 → 250 → 500, ×3) against the same continuously warmed engines. Each run is five minutes at a constant arrival rate with a 30-second warmup excluded from the measured series; a throwaway sanity run before the first round is discarded by protocol, so every counted run starts from the same warmed state. Repeating the ascending order rather than running one level three times consecutively distributes time-of-campaign evenly across levels, so environmental drift shows up as run-to-run spread instead of hiding inside one level's number.
+The campaign ran three reference stages — 100, 250, and 500 exchanges per second — and repeated the whole ascending ladder three times (100 → 250 → 500, ×3) against the same continuously warmed engines. Each run is five minutes at a constant arrival rate with a 30-second warmup excluded from the measured series; a throwaway sanity run before the first round is discarded by protocol, so every counted run starts from the same warmed state.
 
-Each agent Pod drives total-rate/10 arrivals per second — at the 500 stage, 10 Pods × 50 = 500. The constant-arrival-rate executor opens each request on schedule regardless of response time, so it measures latency under controlled arrival, not throughput at saturation. All nine runs delivered their configured rates with zero dropped iterations and a 100% success rate. Each stage's reported row is the **median run of its three**, selected by measured p95; the per-run p95s were 100/s: 7.23/7.54/7.72 ms · 250/s: 7.31/7.44/8.09 ms · 500/s: 9.03/9.51/10.01 ms — tight spreads that indicate the numbers below are not an artifact of a single lucky run.
+Each agent Pod drives total-rate/10 arrivals per second — at the 500 stage, 10 Pods × 50 = 500. The constant-arrival-rate executor opens each request on schedule regardless of response time, so it measures latency under controlled arrival, not throughput at saturation. All nine runs delivered their configured rates with zero dropped iterations and a 100% success rate. 
 
 **Cluster** 
 
@@ -173,7 +174,7 @@ The K8S scheduler is configured to place the two engines on different nodes when
 
 ## How the test is run
 
-Everything is driven by the following scripts, run from the client machine — my laptop: 
+Everything is driven by the following scripts, run from the client machine (my laptop): 
 - Deployment: installs the stack into Kubernetes; 
 - Verification: checks the deployment is healthy and the engines landed on different nodes; 
 - Smoke test: performs a single real token exchange before any load, proving the chain works; 
@@ -204,7 +205,9 @@ Median run of the three rounds per stage, measured phase only, warmup excluded. 
 | 250/s | 100.0% achieved | 75,007 | 5.2 ms | 4.8 ms | 6.6 ms | 7.4 ms | 10.8 ms |
 | 500/s | 100.0% achieved | 150,008 | 5.9 ms | 5.3 ms | 7.7 ms | 9.5 ms | 15.3 ms |
 
-Latency is essentially flat across the tested range: the p95 stays between 7.4 and 9.5 milliseconds from 100 to 500 exchanges per second, and the p99 never leaves double digits at 100 and 250.
+Each stage's reported row is the **median run of its three**, selected by measured p95; the per-run p95s were 100/s: 7.23/7.54/7.72 ms · 250/s: 7.31/7.44/8.09 ms · 500/s: 9.03/9.51/10.01 ms — tight spreads that indicate the numbers below are not an artifact of a single lucky run.
+
+Latency is essentially flat across the tested range: the p95 stays between 7.4 and 9.5 milliseconds from 100 to 500 exchanges per second.
 
 ### Latency and CPU over time at 500 exchanges per second
 
