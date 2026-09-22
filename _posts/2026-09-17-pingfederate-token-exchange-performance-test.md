@@ -19,7 +19,7 @@ layout: post
 
 ## Context
 
-Token exchange is becoming the de-facto standard way to cross a trust boundary in agentic architectures and I have described the pattern in earlier posts on [SPIFFE workload identity](/posts/spiffe-token-exchange-for-agent-workloads/) and on [protecting MCP servers](/posts/protecting-mcp-servers-with-agentcore-gateway-and-pingone-authorize/).
+Token exchange is gaining popularity as a way to cross trust boundaries in agentic architectures, and I have described the pattern in earlier posts on [SPIFFE workload identity](/posts/spiffe-token-exchange-for-agent-workloads/) and on [protecting MCP servers](/posts/protecting-mcp-servers-with-agentcore-gateway-and-pingone-authorize/).
 
 Whenever I propose it, the same performance concern comes up: every extra exchange adds a hop to the authorization server, and a chatty agent could multiply that hop many times. The concern is reasonable, so I measured the token exchange peformance against a two-engine PingFederate cluster on Kubernetes. 
 
