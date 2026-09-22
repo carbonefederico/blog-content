@@ -204,15 +204,15 @@ Latency is essentially flat across the tested range: the p95 stays between 7 and
 
 ### Latency and CPU over time at 500 exchanges per second
 
-The two charts below are the report generator's time-series output. Both are snapshots in time: the axis labels are baked in at publication, and the axis units are raw report values (milliseconds for response time, milli-cores for CPU).
+The two charts below are the Report Generator's time-series output for the 500 tps run. 
 
+Response time (in ms)
 ![Response time p90 over time at the 500-per-second stage. After the warmup, the p90 hovers between 6 and 8 milliseconds with brief one-second spikes, and stays there for the rest of the run.](/assets/img/pf-token-exchange-500rps-p90.svg){: .img-fluid }
 
-After the run settles, the p90 hovers between 6 and 8 milliseconds with brief one-second spikes into the low teens, peaking at 18. No drift, no creep, no gradual degradation.
-
+Combined CPU load of the PingFederate engines (in millicores)
 ![Combined engine CPU of both PingFederate engine Pods during the 500-per-second stage.](/assets/img/pf-te-500rps-engine-cpu.svg){: .img-fluid }
 
-Combined engine CPU holds steady at about 2.5 cores, the busier Pod peaking at 1.5 of its four-core limit. At this load PingFederate is running well inside its comfort zone, at a stable price.
+Combined engine CPU holds steady at about 2.5 cores.
 
 ### Resource consumption
 
@@ -224,25 +224,11 @@ Steady-state combined engine CPU and the CPU cost per exchange:
 | 250/s | 1.23 cores | 1.33 cores | 4.9 CPU-ms |
 | 500/s | 2.54 cores | 2.67 cores | 5.1 CPU-ms |
 
-The last column is engine CPU divided by exchange rate — how much of one core's time one exchange consumes. At about five CPU-milliseconds, capacity arithmetic stays trivial: multiply your target exchange rate by five to six milliseconds. Memory is a non-story: the two engine Pods together sat at a flat 2.8 GiB across all stages — JVM heap, not session state, and well under their 6 GiB combined request — there is no per-session state to grow.
-
-### What an agent platform actually needs
-
-Compare the tested range against a realistic deployment. A medium-sized organization: 1,000 employees, ~10% concurrently active in the agent at peak, so ~100 users. Each action fans out to four or five MCP servers in different trust domains; every trust boundary costs one exchange — call it six per action. At 10 actions per minute per active user: 100 × 10 × 6 / 60 = 100 exchanges per second. That is a fifth of what this starter sizing absorbed at a 7 ms p95 — and the cost is per action, not per LLM call inside the reasoning loop.
-
-## When the concern is valid
-
-What this test does not prove:
-
-- **No persistent storage on the path.** Opaque tokens validated by grant lookup, or refresh-token flows, would add a datastore round-trip per request — meaningful with an external shared datastore. Plan capacity for it.
-- **No IdP round-trip.** Real user authentication happens once, outside the exchange path. If your design re-authenticates inside hot loops, these numbers are not yours.
-- **Capped at 500 exchanges per second.** The campaign stops there by design: driving past it on shared test hardware would measure neighboring-tenant contention as much as PingFederate capacity. On dedicated hardware the curve would extend further; where exactly it lands is an exercise for hardware the cluster does not have.
+The last column is engine CPU divided by exchange rate — how much of one core's time one exchange consumes. At about five CPU-milliseconds. Memory consumption is low: the two engine Pods together sat at a flat 2.8 GiB across all stages.
 
 ## Key takeaways
 
-The headline is simple: token exchange adds almost nothing to what the user experiences. An LLM reasoning step takes seconds; an agent loop takes tens of seconds; the token-exchange hop is milliseconds. The identity hop is effectively invisible next to the intelligence hop.
-
-That is the point to carry into architecture discussions. Exchange once per trust boundary, keep subject tokens self-contained JWTs so validation needs no store lookup, size engines at roughly one core per 200 sustained exchanges per second — and then stop worrying about the token-exchange hop. The thing to optimize in an agentic platform is the reasoning loop; the identity layer is not where the time goes.
+Token exchange adds almost nothing to what the user experiences. An LLM reasoning step takes seconds; an agent loop takes tens of seconds; the token-exchange hop is milliseconds. The identity hop is effectively invisible next to the intelligence hop.
 
 ---
 
