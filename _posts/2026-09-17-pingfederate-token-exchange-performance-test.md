@@ -25,7 +25,7 @@ Whenever I propose it, the same performance concern comes up: every extra exchan
 
 **The result**: at 500 exchanges per second the p95 latency was 9.5 milliseconds, with zero failures across the whole campaign. CPU consumption scaled approximately linearly with the exchange rate across the tested range, corresponding to about 5 CPU-ms of aggregate PingFederate engine CPU per completed exchange.
 
-The test stops at 500 exchanges per second by choice. For small environments that is a sensible baseline and I made the test on a shared envioronment with no dedicated resources.
+The test stops at 500 exchanges per second by choice. The goal was to establish a representative baseline rather than determine the cluster’s saturation point. The tests were also run in a shared environment without dedicated infrastructure.
 
 ## The scenario
 
@@ -67,7 +67,7 @@ flowchart TB
     ADM -.->|"config replication"| ENG2
 ```
 
-- k6 agent Pods: the load generators generate a new JWT subject token at every iteration and exchange it exactly once — no token is reused, no two requests carry the same token. The 10 Pods simulate 10 concurrent agent instances acting on behalf of one pool of 100 synthetic user identities, rotating round-robin. In PingFederate each Pod authenticates as its own OAuth client — `perf-agent-0` through `perf-agent-9` — and the subject token's audience is the calling agent's client id.
+- k6 agent Pods: the load generators generate a new JWT subject token at every iteration and exchange it exactly once — no token is reused, no two requests carry the same token. The 10 Pods simulate 10 independent agent instances acting on behalf of one pool of 100 synthetic user identities, rotating round-robin. In PingFederate each Pod authenticates as its own OAuth client — `perf-agent-0` through `perf-agent-9` — and the subject token's audience is the calling agent's client id.
 - Kubernetes Service: load-balances across both engine Pods on port 9031; admin traffic is not part of the test.
 - PingFederate engines: run the measured path — JWKS fetch and caching, JWT validation, token-exchange policy, output-token signing.
 - PingFederate admin: configures the engines through cluster replication and stays idle.
@@ -207,7 +207,7 @@ Median run of the three rounds per stage, measured phase only, warmup excluded. 
 
 Each stage's reported row is the **median run of its three**, selected by measured p95; the per-run p95s were 100/s: 7.23/7.54/7.72 ms · 250/s: 7.31/7.44/8.09 ms · 500/s: 9.03/9.51/10.01 ms — tight spreads that indicate the numbers below are not an artifact of a single lucky run.
 
-Latency is essentially flat across the tested range: the p95 stays between 7.4 and 9.5 milliseconds from 100 to 500 exchanges per second.
+Latency remained within a narrow range: p95 ranged from 7.4 to 9.5 milliseconds between 100 and 500 exchanges per second.
 
 ### Latency and CPU over time at 500 exchanges per second
 
@@ -237,7 +237,7 @@ Memory consumption is low: the two engine Pods together sat at a flat 2.8 GiB ac
 
 ## Key takeaways
 
-Token exchange adds almost nothing to what the user experiences. An LLM reasoning step takes seconds; an agent loop takes tens of seconds; the token-exchange hop is milliseconds. The identity hop is effectively invisible next to the intelligence hop.
+In this test configuration, the token-exchange step remained in the single-digit-millisecond range at p95 for most of the tested range, reaching 9.5 ms at 500 exchanges per second. In agentic workflows where LLM reasoning and multi-step execution operate on much longer timescales, this makes the measured identity hop small relative to the overall interaction.
 
 ---
 
