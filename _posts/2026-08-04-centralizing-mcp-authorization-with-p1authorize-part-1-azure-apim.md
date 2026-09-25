@@ -50,9 +50,7 @@ PingAuthorize solves those challenges by centralizing **policy evaluation**: it 
 
 ## The solution
 
-The first implementation in this series protects a demo Mortgage MCP Server using Azure API Management. APIM is extended via an APIM Policy Fragment that forwards the entire original MCP request to the PingAuthorize Sideband API, and then either forwards the call to the MCP server or relays the authorization denial to the caller.
-
-The Sideband API is a reverse-proxy authorization interface: instead of sending a distilled authorization request, the enforcement point sends the original HTTP traffic — method, URL, headers, and body — to the PDP, which evaluates policy against the raw request context and returns the decision.
+The first implementation in this series implements an APIM Policy Fragment that delegates the authorization decisions to PingAuthorize. The fragment forwards the entire original MCP request to the PingAuthorize Sideband API, and then either forwards the call to the MCP server or relays the authorization denial to the caller.
 
 The following diagram depicts the components in the implementation and their interactions.
 
@@ -86,23 +84,72 @@ flowchart LR
 - **PingAuthorize Sideband API** — acts as the Policy Decision Point. Receives the original request, evaluates policy over the full HTTP context, and either allows the call through (no response object) or returns a complete denial response for the PEP to relay.
 - **Protected MCP** — the protected MCP server (in our context a demo Mortgage MCP), receives requests only after APIM allows them through.
 
-The important boundary is that APIM does not contain the business authorization logic. It forwards the raw request, and enforces whatever comes back.
+The important aspect is that APIM does not contain the business authorization logic. It forwards the raw request, and enforces whatever comes back.
 
 > **Scope note:** This article focuses on the authorization integration between APIM and PingAuthorize. Token validation, token exchange, and backend MCP server security are outside the scope of this article. In a production setup, APIM would exchange the inbound token for a backend-scoped token before calling the MCP server. For simplicity, the demo MCP server is left open and no token exchanges have been configured in APIM.
 
 ## The Sideband Integration Model
 
-A common alternative is a decision endpoint: the PEP parses the request, extracts relevant attributes into a custom payload, and asks the PDP for a decision. That works, but the mapping logic — which fields matter, how they are named and serialized — lives in the PEP and must be kept in sync with the policies.
-
-The Sideband API removes that mapping layer. The PEP sends the original request as it arrived, and PingAuthorize evaluates policy against the full HTTP context: request method, URL, headers (including the `Authorization` bearer token and its claims), query parameters, client IP, and the request body. If a new policy needs a request field that was not previously forwarded, there is no PEP change to make — the data is already there.
+The Sideband API removes that mapping layer. The PEP sends the original request as it arrived, and PingAuthorize evaluates policy against the full HTTP context: request method, URL, headers (including the `Authorization` bearer token and its claims), query parameters, client IP, and the request body. 
 
 The integration follows three rules:
 
 1. **Permit** — the PDP returns HTTP 200 with no top-level `response` object. The PEP continues to the backend.
-2. **Deny** — the PDP returns HTTP 200 with a top-level `response` object containing a complete response to hand back to the client: status code, reason, headers (including `WWW-Authenticate`), and body.
-3. **Fail closed** — any transport failure or non-200 result is an integration error, never an access grant.
+2. **Deny** — the PDP returns HTTP 200 with a top-level `response` object containing a complete response to hand back to the client: status code, reason, headers (including `WWW-Authenticate`), and body. The status in that object is the PDP's choice, not the PEP's: `401` with a `WWW-Authenticate` header when the token is invalid or a step-up is required, `403` when the request is authenticated but not authorized. The PEP relays it verbatim.
+3. **Fail closed** — any transport failure or non-200 result is an integration error, not an authorization decision. The PEP does not continue and returns `502 Bad Gateway` (`sideband-unavailable` for a failed call, `sideband-error` for a non-200 reply) — an unreachable PDP never becomes implicit access.
 
 This split also has a security benefit for authentication: a denial can carry a `401` with a `WWW-Authenticate` challenge (token invalid or a step-up required) instead of a generic `403`, so the client can react to authentication and authorization failures differently.
+
+
+For an MCP call such as:
+
+```json
+{
+    "jsonrpc": "2.0",
+    "id": 2,
+    "method": "tools/call",
+    "params": {
+        "name": "get_mortgage_summary",
+        "arguments": {
+            "customerId": "CUST-10001"
+        }
+    }
+}
+```
+
+the Sideband request the fragment sends to the PingAuthorize sideband endpoint the following request:
+
+```json
+{
+  "source_ip": "203.0.113.10",
+  "source_port": 5034,
+  "method": "POST",
+  "url": "https://apimid4ai.azure-api.net/mortgage-mcp/mcp/mortgage",
+  "http_version": "1.1",
+  "headers": [
+    { "Accept": "application/json" },
+    { "Content-Type": "application/json" },
+    { "Host": "apimid4ai.azure-api.net" },
+    { "Authorization": "Bearer <agent-access-token>" }
+  ],
+  "body": "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"get_mortgage_summary\",\"arguments\":{\"customerId\":\"CUST-10001\"}}}"
+}
+```
+
+A PERMIT returns HTTP 200 with no `response` object; a DENY returns HTTP 200 with one:
+
+```json
+{
+  "response": {
+    "response_code": 403,
+    "response_status": "Forbidden",
+    "headers": [
+      { "Content-Type": "application/json" }
+    ],
+    "body": "{\"jsonrpc\":\"2.0\",\"id\":2,\"error\":{\"code\":-32003,\"message\":\"Forbidden\"}}"
+  }
+}
+```
 
 ## The APIM Policy Fragment
 
@@ -188,7 +235,7 @@ The envelope mirrors the original request. APIM rebuilds the full request URL (s
 }" />
 ```
 
-One field deserves an explanation. APIM policy expressions cannot access the originating TCP source port, but the Sideband API requires a `source_port` value between 1 and 65535. The fragment therefore uses a fixed synthetic value (`5034`), matching the reference implementation the fragment was modeled on. If your policies need the real client port, this is a known limitation to plan around.
+APIM policy expressions cannot access the originating TCP source port, but the Sideband API requires a `source_port` value between 1 and 65535. The fragment therefore uses a fixed synthetic value (`5034`).
 
 ### 3. Call the Sideband API
 
@@ -220,9 +267,7 @@ The fragment posts the envelope to `{endpoint}/sideband/request`, authenticating
 </send-request>
 ```
 
-The credential header name is part of the Sideband API configuration, so it must match what your PingAuthorize Sideband API endpoint expects — `PDG-TOKEN` here, `CLIENT-TOKEN` in some other integrations.
-
-Note that unlike a decision-endpoint integration, the fragment does **not** fetch an OAuth token. The shared secret authenticates the PEP to the PDP directly, which removes an entire token-acquisition round trip (and the token-caching policies that production would otherwise require).
+The credential header name is part of the Sideband API configuration, so it must match what your PingAuthorize Sideband API endpoint expects — `PDG-TOKEN` here.
 
 ### 4. Enforce the Decision
 
@@ -253,9 +298,7 @@ First, fail closed on transport problems. A failed call leaves the response vari
 </choose>
 ```
 
-A non-200 status is also an integration error — not an authorization denial — and returns `502` with a `sideband-error` code.
-
-With HTTP 200 in hand, the semantics are simple: a top-level `response` object means DENY; its absence means PERMIT.
+A non-200 status is also an integration error — not an authorization denial — and returns `502` with a `sideband-error` code. With HTTP 200, the semantics are simple: a top-level `response` object means DENY; its absence means PERMIT.
 
 ```xml
 <set-variable
@@ -308,84 +351,9 @@ Finally, the denial is returned with the authorization service's status, reason,
 
 The fragment also supports a temporary diagnostics mode: when `{{AuthorizeSidebandDebug}}` is `true`, denials and integration errors return the redacted Sideband request (with `Authorization`, `Cookie`, and `Proxy-Authorization` headers masked) and the complete authorization response to the API client, which makes endpoint and payload mistakes obvious during setup. Remove it before production.
 
-## The Sideband Request
-
-For an MCP call such as:
-
-```json
-{
-    "jsonrpc": "2.0",
-    "id": 2,
-    "method": "tools/call",
-    "params": {
-        "name": "get_mortgage_summary",
-        "arguments": {
-            "customerId": "CUST-10001"
-        }
-    }
-}
-```
-
-the Sideband request the fragment sends looks like:
-
-```json
-{
-  "source_ip": "203.0.113.10",
-  "source_port": 5034,
-  "method": "POST",
-  "url": "https://apimid4ai.azure-api.net/mortgage-mcp/mcp/mortgage",
-  "http_version": "1.1",
-  "headers": [
-    { "Accept": "application/json" },
-    { "Content-Type": "application/json" },
-    { "Host": "apimid4ai.azure-api.net" },
-    { "Authorization": "Bearer <agent-access-token>" }
-  ],
-  "body": "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"get_mortgage_summary\",\"arguments\":{\"customerId\":\"CUST-10001\"}}}"
-}
-```
-
-The same call can be reproduced with `curl`, which is exactly how the reference test client exercises the endpoint:
-
-```bash
-curl -s "https://paz.example.com:7443/sideband/request" \
-  -H "PDG-TOKEN: $SIDEBAND_CREDENTIAL" \
-  -H "Content-Type: application/json" \
-  -H "Accept: application/json" \
-  -d '{
-    "source_ip": "203.0.113.10",
-    "source_port": 5034,
-    "method": "POST",
-    "url": "https://apimid4ai.azure-api.net/mortgage-mcp/mcp/mortgage",
-    "http_version": "1.1",
-    "headers": [
-      { "Accept": "application/json" },
-      { "Content-Type": "application/json" },
-      { "Host": "apimid4ai.azure-api.net" },
-      { "Authorization": "Bearer <agent-access-token>" }
-    ],
-    "body": "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"get_mortgage_summary\",\"arguments\":{\"customerId\":\"CUST-10001\"}}}"
-  }'
-```
-
-A PERMIT returns HTTP 200 with no `response` object; a DENY returns HTTP 200 with one:
-
-```json
-{
-  "response": {
-    "response_code": 403,
-    "response_status": "Forbidden",
-    "headers": [
-      { "Content-Type": "application/json" }
-    ],
-    "body": "{\"jsonrpc\":\"2.0\",\"id\":2,\"error\":{\"code\":-32003,\"message\":\"Forbidden\"}}"
-  }
-}
-```
-
 ## Policies
 
-The demo authorizes a mortgage MCP server. The inbound token carries the scopes the caller holds, plus — when the call is delegated — the human principal and the agent acting on their behalf:
+To test the fragemnt I used a demo mortgage MCP server. The inbound token carries the scopes the caller holds, plus — when the call is delegated — the human principal and the agent acting on their behalf:
 
 ```json
 {
@@ -414,15 +382,56 @@ The demo policies for the mortgage service, in evaluation order (first applicabl
 | 6 | Risky Changes – Approved | risky `changeType` and `approved_for = submit_mortgage_change_request` | PERMIT |
 | 7 | Default Deny | anything else | DENY |
 
-Expired or invalid tokens are rejected earlier by token validation, so the matrix above only sees well-formed tokens. Three design ideas are worth calling out:
+Expired or invalid tokens are rejected earlier by token validation, so the matrix above only sees well-formed tokens. For this demo I followed these authorization principles:
 
 - **Scopes are capability classes, policies map tools to classes.** Tokens carry coarse scopes (`mortgage:read`, `mortgage:write`); the policy decides which tools they cover. Adding a tool never requires re-issuing tokens.
 - **Risk lives in the payload, not the tool.** The same `submit_mortgage_change_request` call flips between permit and approval-required based on the `changeType` argument — the sideband model makes the full payload available to policy without any gateway-side mapping.
 - **Human-in-the-loop is deny-with-challenge.** The PDP cannot pause a decision. Risky changes are denied with an `approval_required` challenge; once a human approves out-of-band, the approval is minted into a short-lived, purpose-bound token claim (`approved_for`), and the same call retried flows through the approval rule. Delegation is gated the same way: only VIP subjects may be operated through the delegated agent.
 
-The e2e test suite in the reference project runs the full matrix through the live chain — 14 assertions covering the session methods, reads, benign and risky changes, approval retry, unknown tools, expired tokens, and the delegation gate — asserting 200 permit, 403 policy deny, or 401 invalid token on each.
+## Testing the Policies Against the Demo Mortgage MCP
 
-The following picture shows what such a policy looks like in the policy designer (shown here in PingOne Authorize, the cloud counterpart of PingAuthorize).
+I tested the policy set against the demo mortgage MCP server through the full chain — client, APIM, sideband, PingAuthorize, backend — using an end-to-end test suite that mints every scenario token on the fly with explicit claims, so each scenario is self-documenting. The suite runs fourteen assertions across two matrices: a core policy matrix and a delegation matrix, each asserting the expected outcome (200 permit, 403 policy deny, or 401 invalid token).
+
+The policies under test layer four independent controls over a single tool, `submit_mortgage_change_request`, and those four controls are what the rest of this section walks through.
+
+### Scopes Are Capability Classes
+
+Tokens carry coarse scopes — `mortgage:read`, `mortgage:write` — and the policies map tools onto those classes. Read tools (`get_mortgage_summary`, `calculate_affordability`, `generate_rate_quote`) require `mortgage:read`; changes require `mortgage:write`. The scope is the capability class; the policy, not the token issuer, decides which tools belong to it. Adding a new tool never requires re-issuing tokens — one policy edit maps it to a class. This also means a write-only token cannot sneak into a read tool: the mapping is enforced in one place, not per tool.
+
+### Risk Lives in the Payload, Not the Tool
+
+The same tool call is permitted or challenged based on its `changeType` argument, which a JSONPath attribute (`MCP Change Type`) parses straight out of the JSON-RPC body. Tool-level authorization alone would be too coarse: moving a payment date and switching the mortgage rate are both "a write," but they are not both acceptable without a human. Renaming a due date (`PAYMENT_DATE`) is economically harmless and permitted on `mortgage:write`; switching the rate, extending the term, or overpaying (`RATE_SWITCH`, `TERM_CHANGE`, `OVERPAYMENT`) trigger the human-in-the-loop path.
+
+### Human-in-the-Loop Is Deny-Then-Challenge, Then Re-authorization
+
+A PDP decision is synchronous — it cannot pause mid-decision and wait for a human. So the risky path works as a two-phase loop:
+
+1. The agent submits a risky change. Policy 5 denies with a `403` carrying a machine-readable `approval_required` challenge. Nothing was executed — the denial is the challenge.
+2. A human approves in a portal. The authorization server performs the approval step-up and issues a new, short-lived transaction token whose claims mirror the exact approved transaction:
+
+```json
+{
+  "approved_for": "submit_mortgage_change_request",
+  "tctx": {
+    "tool": "submit_mortgage_change_request",
+    "changeType": "TERM_CHANGE",
+    "mortgageId": "MORT-90001",
+    "requestedValue": "30 years"
+  }
+}
+```
+
+This follows the transaction-token idea ([draft-ietf-oauth-transaction-tokens](https://datatracker.ietf.org/doc/draft-ietf-oauth-transaction-tokens/){:target="_blank"}): the AS mints short-lived, narrowly scoped tokens whose `tctx` carries the signed transaction details that downstream authorization compares against. In this demo the transaction claims travel inside the access token itself — as if the AS had minted it after the approval step-up — rather than in a separate Txn-Token header.
+
+3. The agent retries the identical call with that token. Policy 6 compares every `tctx` claim against the payload, attribute to attribute: `tctx.tool` against the MCP tool name, `tctx.changeType` against the parsed change type, `tctx.mortgageId` against the mortgage in the payload. Any drift — a different change type, a different mortgage — breaks the mirror and the risky call is denied again. Same call plus a token without approval is a `403`; the same call plus the approval token is a `200`. The enforcement point never changes; only the credential does.
+
+The approval is purpose-bound and short-lived. It is not a blanket capability: replaying the token against a different mortgage breaks the mirror and is denied, and expiry is the revocation. (Production hardening beyond the demo: the backend should reject a transaction context it never issued, and a spent transaction id should not be redeemable twice.)
+
+### Delegation Is a First-Class Gate
+
+Classic token-exchange tokens (RFC 8693) carry the human in `sub` — plus a `sub_type` such as `vip_user` — and the acting agent in `act.sub`. The delegation gate enforces that only VIP subjects may be operated through the delegated agent: a `standard_user` behind the same `customer_support_agent` gets `403 delegation_not_permitted`, while direct (non-delegated) users are untouched by the gate. The agent's identity is thus evaluated as part of the decision, not just logged. The delegation matrix in the test suite proves this with four scenarios — VIP behind the agent, standard user behind the same agent, VIP calling directly, and the combined VIP-plus-approval path.
+
+The following picture shows what such a policy looks like in the policy designer.
 ![Policy — showing the rule set described above enforced for the mortgage MCP service](/assets/img/pingone-authorize-policy-customer-mcp.png)
 
 The following two pictures show how the Decision Visualizer depicts its decisioning process. The first shows a PERMIT evaluation; the second shows a DENY due to an invalid actor subject.
@@ -430,18 +439,10 @@ The following two pictures show how the Decision Visualizer depicts its decision
 
 ![Decision outcome — showing DENY with resolved attributes and statement details](/assets/img/pingone-authorize-policy-evaluation-denied.png)
 
-> Note: the screenshots above are from the earlier customer-MCP demo; the current mortgage demo uses the same designer and visualizer, so the screens differ only in attribute and rule names.
 
 ## Key Takeaways
 
 This article explained how PingAuthorize provides centralized dynamic authorization for Azure API Management. APIM acts as a Policy Enforcement Point for MCP servers without embedding business authorization rules in the gateway or in the protected MCP servers themselves. The policy fragment is the only integration artifact needed, and because it speaks the Sideband API — shared between PingAuthorize software and PingOne Authorize in the cloud — the same artifact enforces the same policies against either deployment.
-
-Compared with a decision-endpoint integration, the sideband model keeps the PEP thin:
-
-- the PEP forwards the original request instead of mapping it into a custom payload, so no context-extraction logic lives in the gateway
-- the PEP authenticates with a shared secret instead of maintaining its own OAuth client and token cache
-- denials relay the PDP's status, challenge, and body verbatim, so authentication failures (`401` + `WWW-Authenticate`) stay distinguishable from authorization failures (`403`)
-- missing or unreachable PDP results in a fail-closed `502`, never silent access
 
 This pattern is most useful when:
 
