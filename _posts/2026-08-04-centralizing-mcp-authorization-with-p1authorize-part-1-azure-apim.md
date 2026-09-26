@@ -353,61 +353,21 @@ The fragment also supports a temporary diagnostics mode: when `{{AuthorizeSideba
 
 ## Policies
 
-To test the fragemnt I used a demo mortgage MCP server. The inbound token carries the scopes the caller holds, plus — when the call is delegated — the human principal and the agent acting on their behalf:
+To test the fragment I used a demo mortgage MCP server. In sideband mode, PingAuthorize receives the original request and exposes its full HTTP context to policies — including the JSON-RPC body, which policies read through JSONPath attributes (the method, the tool name, risk-relevant arguments such as `changeType`), and the claims of the bearer token in the `Authorization` header.
 
-```json
-{
-  "sub": "vip_user",
-  "sub_type": "vip_user",
-  "aud": "https://apimid4ai.azure-api.net",
-  "scope": "mortgage:read mortgage:write",
-  "act": {
-    "sub": "customer_support_agent"
-  },
-  "approved_for": "submit_mortgage_change_request"
-}
-```
+The following controls are evaluated in order (first applicable wins), after a global **Token Validation** policy has already rejected expired, badly signed, or wrong-issuer tokens with a `401`:
 
-In sideband mode, PingAuthorize receives the original request and exposes its HTTP context to policies: request method, URI, headers, query parameters, client IP, the request body, and the claims of the bearer token in the `Authorization` header. Policies read the MCP context from the JSON-RPC body through JSONPath attributes — the method, the tool name, and risk-relevant arguments such as `changeType` — and the token claims from the bearer token. For example, `$.params.name` exposes the tool being invoked and `$.params.arguments.changeType` exposes the requested change, so rules can key on both.
+1. **Token validity** — an inactive token never reaches the policy set: the global Token Validation policy denies it with a `401` before any MCP logic runs.
+2. **Allow Delegated Token by VIP Users Only** — when the call is delegated (the token carries both a subject and an actor subject, `act.sub`, meaning an agent is acting for a user), it is permitted only if the subject is a VIP user. A standard user behind the same agent is denied with `delegation_not_permitted`; direct, non-delegated calls are untouched by this gate.
+3. **Allow read operations** — the read tools (`get_mortgage_summary`, `calculate_affordability`, `generate_rate_quote`) are permitted for tokens carrying the `mortgage:read` scope.
+4. **Allow low risk changes** — `changeType = PAYMENT_DATE` (moving a due date, no economic risk) is permitted on the `mortgage:write` scope with no human involvement.
+5. **Deny High Risk Changes Without HITL** — economically risky changes (`RATE_SWITCH`, `TERM_CHANGE`, `OVERPAYMENT`) are denied with a machine-readable `approval_required` challenge unless the token carries a matching approval. Nothing is executed; the denial *is* the challenge.
+6. **Allow High Risk Changes with HITL** — a risky change is permitted when the token carries an approval whose transaction context mirrors this exact payload, claim by claim (validated with the HITL mechanism described below).
+7. **Default Deny** — anything else: unknown tools, wrong scopes, anything unmatched.
 
-The demo policies for the mortgage service, in evaluation order (first applicable wins):
+Scopes act as capability classes (`mortgage:read`, `mortgage:write`) that policies map tools onto, so adding a tool never requires re-issuing tokens — and risk lives in the payload, not the tool: the same `submit_mortgage_change_request` call flips between permit and challenge based on its `changeType` argument.
 
-| # | Policy | Fires when | Decision |
-|---|---|---|---|
-| 1 | Session Methods | method is `initialize`, `tools/list`, or `ping` | PERMIT |
-| 2 | VIP Delegation Gate | call is delegated (`act.sub` present) and the subject is not a VIP user | DENY — `delegation_not_permitted` |
-| 3 | Mortgage Reads | a read tool and scope `mortgage:read` | PERMIT |
-| 4 | Benign Changes | `changeType = PAYMENT_DATE` and scope `mortgage:write` | PERMIT |
-| 5 | Risky Changes – Approval Required | risky `changeType` (RATE_SWITCH, TERM_CHANGE, OVERPAYMENT) and no approval binding | DENY — `approval_required` |
-| 6 | Risky Changes – Approved | risky `changeType` and `approved_for = submit_mortgage_change_request` | PERMIT |
-| 7 | Default Deny | anything else | DENY |
-
-Expired or invalid tokens are rejected earlier by token validation, so the matrix above only sees well-formed tokens. For this demo I followed these authorization principles:
-
-- **Scopes are capability classes, policies map tools to classes.** Tokens carry coarse scopes (`mortgage:read`, `mortgage:write`); the policy decides which tools they cover. Adding a tool never requires re-issuing tokens.
-- **Risk lives in the payload, not the tool.** The same `submit_mortgage_change_request` call flips between permit and approval-required based on the `changeType` argument — the sideband model makes the full payload available to policy without any gateway-side mapping.
-- **Human-in-the-loop is deny-with-challenge.** The PDP cannot pause a decision. Risky changes are denied with an `approval_required` challenge; once a human approves out-of-band, the approval is minted into a short-lived, purpose-bound token claim (`approved_for`), and the same call retried flows through the approval rule. Delegation is gated the same way: only VIP subjects may be operated through the delegated agent.
-
-## Testing the Policies Against the Demo Mortgage MCP
-
-I tested the policy set against the demo mortgage MCP server through the full chain — client, APIM, sideband, PingAuthorize, backend — using an end-to-end test suite that mints every scenario token on the fly with explicit claims, so each scenario is self-documenting. The suite runs fourteen assertions across two matrices: a core policy matrix and a delegation matrix, each asserting the expected outcome (200 permit, 403 policy deny, or 401 invalid token).
-
-The policies under test layer four independent controls over a single tool, `submit_mortgage_change_request`, and those four controls are what the rest of this section walks through.
-
-### Scopes Are Capability Classes
-
-Tokens carry coarse scopes — `mortgage:read`, `mortgage:write` — and the policies map tools onto those classes. Read tools (`get_mortgage_summary`, `calculate_affordability`, `generate_rate_quote`) require `mortgage:read`; changes require `mortgage:write`. The scope is the capability class; the policy, not the token issuer, decides which tools belong to it. Adding a new tool never requires re-issuing tokens — one policy edit maps it to a class. This also means a write-only token cannot sneak into a read tool: the mapping is enforced in one place, not per tool.
-
-### Risk Lives in the Payload, Not the Tool
-
-The same tool call is permitted or challenged based on its `changeType` argument, which a JSONPath attribute (`MCP Change Type`) parses straight out of the JSON-RPC body. Tool-level authorization alone would be too coarse: moving a payment date and switching the mortgage rate are both "a write," but they are not both acceptable without a human. Renaming a due date (`PAYMENT_DATE`) is economically harmless and permitted on `mortgage:write`; switching the rate, extending the term, or overpaying (`RATE_SWITCH`, `TERM_CHANGE`, `OVERPAYMENT`) trigger the human-in-the-loop path.
-
-### Human-in-the-Loop Is Deny-Then-Challenge, Then Re-authorization
-
-A PDP decision is synchronous — it cannot pause mid-decision and wait for a human. So the risky path works as a two-phase loop:
-
-1. The agent submits a risky change. Policy 5 denies with a `403` carrying a machine-readable `approval_required` challenge. Nothing was executed — the denial is the challenge.
-2. A human approves in a portal. The authorization server performs the approval step-up and issues a new, short-lived transaction token whose claims mirror the exact approved transaction:
+The human-in-the-loop path works as a deny-then-challenge loop. A PDP decision is synchronous — it cannot pause and wait for a human — so a risky change is first denied with the `approval_required` challenge. Once a human approves in a portal, the authorization server issues a short-lived transaction token whose claims mirror the approved transaction exactly (following the [Transaction Tokens draft](https://datatracker.ietf.org/doc/draft-ietf-oauth-transaction-tokens/){:target="_blank"}, with the transaction context carried inside the access token itself):
 
 ```json
 {
@@ -421,23 +381,17 @@ A PDP decision is synchronous — it cannot pause mid-decision and wait for a hu
 }
 ```
 
-This follows the transaction-token idea ([draft-ietf-oauth-transaction-tokens](https://datatracker.ietf.org/doc/draft-ietf-oauth-transaction-tokens/){:target="_blank"}): the AS mints short-lived, narrowly scoped tokens whose `tctx` carries the signed transaction details that downstream authorization compares against. In this demo the transaction claims travel inside the access token itself — as if the AS had minted it after the approval step-up — rather than in a separate Txn-Token header.
+When the agent retries the identical call with that token, the approval policy validates the HITL by comparing every `tctx` claim against the parsed payload, attribute to attribute: `tctx.tool` against the MCP tool name, `tctx.changeType` against the parsed change type, `tctx.mortgageId` against the mortgage in the request. Any drift — a different change type, a different mortgage — breaks the mirror and the call is denied again. The approval is purpose-bound, not a blanket capability: expiry is the revocation, and replaying the token against a different transaction fails the mirror. Same call without the approval token is a `403`; with it, a `200`. The enforcement point never changes — only the credential does.
 
-3. The agent retries the identical call with that token. Policy 6 compares every `tctx` claim against the payload, attribute to attribute: `tctx.tool` against the MCP tool name, `tctx.changeType` against the parsed change type, `tctx.mortgageId` against the mortgage in the payload. Any drift — a different change type, a different mortgage — breaks the mirror and the risky call is denied again. Same call plus a token without approval is a `403`; the same call plus the approval token is a `200`. The enforcement point never changes; only the credential does.
+The e2e test suite in the reference project runs this matrix through the full live chain — fourteen assertions across a core policy matrix and a delegation matrix, asserting `200` permit, `403` policy deny, or `401` invalid token per scenario.
 
-The approval is purpose-bound and short-lived. It is not a blanket capability: replaying the token against a different mortgage breaks the mirror and is denied, and expiry is the revocation. (Production hardening beyond the demo: the backend should reject a transaction context it never issued, and a spent transaction id should not be redeemable twice.)
+The following picture shows the policy set in the policy designer.
+![Policy set — showing the seven mortgage MCP policies and the global Token Validation policy](/assets/img/pingone-authorize-policy-customer-mcp.png)
 
-### Delegation Is a First-Class Gate
+The following two pictures show how the Decision Visualizer depicts the evaluation: a PERMIT (a read tool permitted by the `mortgage:read` scope), and a DENY (a risky change denied for missing approval).
+![Decision Visualizer — PERMIT evaluation of a mortgage read tool](/assets/img/pingone-authorize-policy-evaluation-success.png)
 
-Classic token-exchange tokens (RFC 8693) carry the human in `sub` — plus a `sub_type` such as `vip_user` — and the acting agent in `act.sub`. The delegation gate enforces that only VIP subjects may be operated through the delegated agent: a `standard_user` behind the same `customer_support_agent` gets `403 delegation_not_permitted`, while direct (non-delegated) users are untouched by the gate. The agent's identity is thus evaluated as part of the decision, not just logged. The delegation matrix in the test suite proves this with four scenarios — VIP behind the agent, standard user behind the same agent, VIP calling directly, and the combined VIP-plus-approval path.
-
-The following picture shows what such a policy looks like in the policy designer.
-![Policy — showing the rule set described above enforced for the mortgage MCP service](/assets/img/pingone-authorize-policy-customer-mcp.png)
-
-The following two pictures show how the Decision Visualizer depicts its decisioning process. The first shows a PERMIT evaluation; the second shows a DENY due to an invalid actor subject.
-![Decision outcome — showing PERMIT with resolved attributes and statement details](/assets/img/pingone-authorize-policy-evaluation-success.png)
-
-![Decision outcome — showing DENY with resolved attributes and statement details](/assets/img/pingone-authorize-policy-evaluation-denied.png)
+![Decision Visualizer — DENY evaluation of a risky change without approval](/assets/img/pingone-authorize-policy-evaluation-denied.png)
 
 
 ## Key Takeaways
