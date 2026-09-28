@@ -28,8 +28,6 @@ This is the first article in a series exploring how PingAuthorize can centralize
 
 I start with **Azure API Management (APIM)** protecting an MCP server, while future articles will apply the same model to other enforcement points such as AWS AgentCore Gateway.
 
-> **Deployment note:** This series uses the PingAuthorize software, deployed in your own environment. PingAuthorize is also available as a cloud-delivered service (PingOne Authorize). The integration described here uses the **Sideband API**, a protocol shared by both products: the same policy fragment works against either deployment — only the endpoint base URL and the shared credential change.
-
 ## What Problem PingAuthorize solves: Sprawl Across Hybrid Environments
 
 As enterprises expand across cloud providers and AI platforms, these challenges emerge.
@@ -79,9 +77,9 @@ flowchart LR
 ```
 
 - **Agent** — invokes MCP tools through APIM using an Agent Access Token (typically obtained via Token Exchange).
-- **Azure API Management** — acts as the Policy Enforcement Point. Receives the MCP request, runs the policy fragment, and either forwards the call to the backend MCP or relays the denial.
+- **Azure API Management** — acts as the Policy Enforcement Point (PEP). Receives the MCP request, runs the policy fragment, and either forwards the call to the backend MCP or relays the denial.
 - **APIM Policy Fragment** — a reusable APIM policy artifact that preserves the original request, wraps it in a Sideband request envelope, calls the PingAuthorize Sideband API with a shared secret, and enforces the returned decision. It performs no OAuth flows of its own.
-- **PingAuthorize Sideband API** — acts as the Policy Decision Point. Receives the original request, evaluates policy over the full HTTP context, and either allows the call through (no response object) or returns a complete denial response for the PEP to relay.
+- **PingAuthorize Sideband API** — acts as the Policy Decision Point (PDP). Receives the original request, evaluates policy over the full HTTP context, and either allows the call through (no response object) or returns a complete denial response for the PEP to relay.
 - **Protected MCP** — the protected MCP server (in our context a demo Mortgage MCP), receives requests only after APIM allows them through.
 
 The important aspect is that APIM does not contain the business authorization logic. It forwards the raw request, and enforces whatever comes back.
@@ -90,7 +88,7 @@ The important aspect is that APIM does not contain the business authorization lo
 
 ## The Sideband Integration Model
 
-The Sideband API removes that mapping layer. The PEP sends the original request as it arrived, and PingAuthorize evaluates policy against the full HTTP context: request method, URL, headers (including the `Authorization` bearer token and its claims), query parameters, client IP, and the request body. 
+With this model, the APIM sends the original request as it arrived, and PingAuthorize evaluates policy against the full HTTP context: request method, URL, headers (including the `Authorization` bearer token and its claims), query parameters, client IP, and the request body. 
 
 The integration follows three rules:
 
@@ -117,7 +115,7 @@ For an MCP call such as:
 }
 ```
 
-the Sideband request the fragment sends to the PingAuthorize sideband endpoint the following request:
+the fragment sends to the PingAuthorize sideband endpoint the following request:
 
 ```json
 {
@@ -315,7 +313,7 @@ A non-200 status is also an integration error — not an authorization denial �
 <!-- No response object means PERMIT; continue to the backend unchanged. -->
 ```
 
-On denial, the fragment extracts `response_code`, `response_status`, the response headers (looking for `content-type` and `www-authenticate`), and the body, then relays them to the caller. The status is the authorization service's own decision — `401` for authentication failures or step-up, `403` for authorization failures — not a status APIM invented:
+On denial, the fragment extracts `response_code`, `response_status`, the response headers (looking for `content-type` and `www-authenticate`), and the body, then relays them to the caller. The status is the authorization service's own decision — `401` for authentication failures or step-up, `403` for authorization failures:
 
 ```xml
 <set-variable name="authorizeDenyStatus" value="@{
@@ -349,11 +347,11 @@ The relayed body preserves the JSON-RPC envelope: the fragment reads the `id` fr
 
 Finally, the denial is returned with the authorization service's status, reason, and `WWW-Authenticate` header when one was supplied.
 
-The fragment also supports a temporary diagnostics mode: when `{{AuthorizeSidebandDebug}}` is `true`, denials and integration errors return the redacted Sideband request (with `Authorization`, `Cookie`, and `Proxy-Authorization` headers masked) and the complete authorization response to the API client, which makes endpoint and payload mistakes obvious during setup. Remove it before production.
+The fragment also supports a temporary diagnostics mode: when `AuthorizeSidebandDebug` is `true`, denials and integration errors return the redacted Sideband request (with `Authorization`, `Cookie`, and `Proxy-Authorization` headers masked) and the complete authorization response to the API client, which makes endpoint and payload mistakes obvious during setup. Set it to true **only** for debugging.
 
 ## Policies
 
-To test the fragment I used a demo mortgage MCP server. In sideband mode, PingAuthorize receives the original request and exposes its full HTTP context to policies — including the JSON-RPC body, which policies read through JSONPath attributes (the method, the tool name, risk-relevant arguments such as `changeType`), and the claims of the bearer token in the `Authorization` header.
+To test the fragment I used a demo mortgage MCP server. In sideband mode, PingAuthorize receives the original request and exposes its full HTTP context to policies — including the JSON-RPC body. The policies extract the attributes needed for authorization evaluation (the method, the tool name, risk-relevant arguments such as `changeType`), and the claims of the bearer token in the `Authorization` header.
 
 The following controls are evaluated in order (first applicable wins), after a global **Token Validation** policy has already rejected expired, badly signed, or wrong-issuer tokens with a `401`:
 
@@ -362,12 +360,12 @@ The following controls are evaluated in order (first applicable wins), after a g
 3. **Allow read operations** — the read tools (`get_mortgage_summary`, `calculate_affordability`, `generate_rate_quote`) are permitted for tokens carrying the `mortgage:read` scope.
 4. **Allow low risk changes** — `changeType = PAYMENT_DATE` (moving a due date, no economic risk) is permitted on the `mortgage:write` scope with no human involvement.
 5. **Deny High Risk Changes Without HITL** — economically risky changes (`RATE_SWITCH`, `TERM_CHANGE`, `OVERPAYMENT`) are denied with a machine-readable `approval_required` challenge unless the token carries a matching approval. Nothing is executed; the denial *is* the challenge.
-6. **Allow High Risk Changes with HITL** — a risky change is permitted when the token carries an approval whose transaction context mirrors this exact payload, claim by claim (validated with the HITL mechanism described below).
+6. **Allow High Risk Changes with HITL** — a risky change is permitted when the token carries an approval whose transaction context mirrors this exact payload, claim by claim, and whose `txn` claim matches the transaction id in the payload (validated with the HITL mechanism described below).
 7. **Default Deny** — anything else: unknown tools, wrong scopes, anything unmatched.
 
-Scopes act as capability classes (`mortgage:read`, `mortgage:write`) that policies map tools onto, so adding a tool never requires re-issuing tokens — and risk lives in the payload, not the tool: the same `submit_mortgage_change_request` call flips between permit and challenge based on its `changeType` argument.
+Scopes act as capability classes (`mortgage:read`, `mortgage:write`) that policies map tools onto, so adding a tool never requires re-issuing tokens. Risk lives in the payload, not the tool: the same `submit_mortgage_change_request` call flips between permit and challenge based on its `changeType` argument.
 
-The human-in-the-loop path works as a deny-then-challenge loop. A PDP decision is synchronous — it cannot pause and wait for a human — so a risky change is first denied with the `approval_required` challenge. Once a human approves in a portal, the authorization server issues a short-lived transaction token whose claims mirror the approved transaction exactly (following the [Transaction Tokens draft](https://datatracker.ietf.org/doc/draft-ietf-oauth-transaction-tokens/){:target="_blank"}, with the transaction context carried inside the access token itself):
+The human-in-the-loop path works as a deny-then-challenge loop. A PDP decision is synchronous — it cannot pause and wait for a human — so a risky change is first denied with the `approval_required` challenge. The human is redirected by the agent to the authorization server to obtain a short-lived transaction token whose claims mirror the approved transaction exactly (with the transaction context carried inside the access token itself):
 
 ```json
 {
@@ -377,13 +375,21 @@ The human-in-the-loop path works as a deny-then-challenge loop. A PDP decision i
     "changeType": "TERM_CHANGE",
     "mortgageId": "MORT-90001",
     "requestedValue": "30 years"
-  }
+  },
+  "txn": "TXN-8f3c1a90-4d2e-4b7a-9c1f-2e5d6a8b3c4d"
 }
 ```
 
-When the agent retries the identical call with that token, the approval policy validates the HITL by comparing every `tctx` claim against the parsed payload, attribute to attribute: `tctx.tool` against the MCP tool name, `tctx.changeType` against the parsed change type, `tctx.mortgageId` against the mortgage in the request. Any drift — a different change type, a different mortgage — breaks the mirror and the call is denied again. The approval is purpose-bound, not a blanket capability: expiry is the revocation, and replaying the token against a different transaction fails the mirror. Same call without the approval token is a `403`; with it, a `200`. The enforcement point never changes — only the credential does.
+The `txn` claim is the transaction identifier minted by the authorization server. When the agent retries the identical call with that token, the approval policy validates the HITL by comparing every `tctx` claim against the parsed payload, attribute to attribute (the mirror):
 
-The e2e test suite in the reference project runs this matrix through the full live chain — fourteen assertions across a core policy matrix and a delegation matrix, asserting `200` permit, `403` policy deny, or `401` invalid token per scenario.
+- `tctx.tool` against the MCP tool name, 
+- `tctx.changeType` against the parsed change type, 
+- `tctx.mortgageId` against the mortgage in the request,
+- `txn` in the token against the transaction id in the payload. 
+
+Any drift — a different change type, a different mortgage, a mismatched transaction id — breaks the mirror and the call is denied again. 
+
+The transaction id included in the payload and in the token, helps the backend to protect against token replays: the backend records the first execution against the transaction id and, for any subsequent request with the same id, returns the recorded outcome without re-executing the business logic.
 
 The following picture shows the policy set in the policy designer.
 ![Policy set — showing the seven mortgage MCP policies and the global Token Validation policy](/assets/img/pingone-authorize-policy-customer-mcp.png)
