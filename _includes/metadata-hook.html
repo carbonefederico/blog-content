@@ -1,3 +1,8 @@
 {% if page.mermaid %}
   <link rel="stylesheet" href="{{ '/assets/css/mermaid-theme.css' | relative_url }}">
 {% endif %}
+
+{% if page.layout == 'post' and page.collapse_code %}
+  <link rel="stylesheet" href="{{ '/assets/css/code-collapser.css' | relative_url }}">
+  <script src="{{ '/assets/js/code-collapser.js' | relative_url }}" defer></script>
+{% endif %}

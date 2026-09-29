@@ -1,0 +1,44 @@
+/* Code-snippet collapse toggles (loaded with code-collapser.js). */
+details.code-snippet {
+  margin: 1rem 0;
+}
+
+details.code-snippet > summary {
+  cursor: pointer;
+  padding: 0.4rem 0.75rem;
+  border: 1px solid var(--kbd-border-color, rgba(173, 181, 189, 0.25));
+  border-radius: 0.35rem;
+  color: var(--link-color, #adb5bd);
+  font-size: 0.85rem;
+  user-select: none;
+  list-style: none;
+}
+
+details.code-snippet > summary::-webkit-details-marker {
+  display: none;
+}
+
+details.code-snippet > summary::before {
+  content: '\25B8'; /* right-pointing triangle */
+  display: inline-block;
+  margin-right: 0.5rem;
+  transition: transform 0.15s ease;
+}
+
+details.code-snippet[open] > summary::before {
+  transform: rotate(90deg);
+}
+
+details.code-snippet > summary:hover {
+  color: var(--link-hover-color, #e5e7eb);
+  border-color: var(--link-hover-color, rgba(173, 181, 189, 0.5));
+}
+
+details.code-snippet > summary + * {
+  margin-top: 0.5rem;
+}
+
+/* Hide the theme's own code-header label when collapsed — less chrome. */
+details.code-snippet .code-header {
+  display: none;
+}

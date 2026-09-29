@@ -7,6 +7,7 @@ categories:
 - Identity
 - Architecture
 mermaid: true
+collapse_code: true
 tags:
 - MCP
 - Azure APIM
@@ -114,6 +115,7 @@ For an MCP call such as:
     }
 }
 ```
+{:.no-collapse}
 
 the fragment sends to the PingAuthorize sideband endpoint the following request:
 
@@ -133,6 +135,7 @@ the fragment sends to the PingAuthorize sideband endpoint the following request:
   "body": "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"get_mortgage_summary\",\"arguments\":{\"customerId\":\"CUST-10001\"}}}"
 }
 ```
+{:.no-collapse}
 
 A PERMIT returns HTTP 200 with no `response` object; a DENY returns HTTP 200 with one:
 
@@ -148,6 +151,7 @@ A PERMIT returns HTTP 200 with no `response` object; a DENY returns HTTP 200 wit
   }
 }
 ```
+{:.no-collapse}
 
 ## The APIM Policy Fragment
 
@@ -344,6 +348,7 @@ The relayed body preserves the JSON-RPC envelope: the fragment reads the `id` fr
   }
 }
 ```
+{:.no-collapse}
 
 Finally, the denial is returned with the authorization service's status, reason, and `WWW-Authenticate` header when one was supplied.
 
@@ -365,6 +370,39 @@ The following controls are evaluated in order (first applicable wins), after a g
 
 Scopes act as capability classes (`mortgage:read`, `mortgage:write`) that policies map tools onto, so adding a tool never requires re-issuing tokens. Risk lives in the payload, not the tool: the same `submit_mortgage_change_request` call flips between permit and challenge based on its `changeType` argument.
 
+When a policy denies a request because the token lacks the required scope, the denial is MCP-compliant. PingAuthorize composes the challenge defined by the [MCP authorization specification](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization){:target="_blank"}: HTTP `403` with a `WWW-Authenticate` header carrying `error="insufficient_scope"`, the required `scope`, and the `resource_metadata` URL of the Protected Resource Metadata document that the MCP server exposes. The fragment relays the decision verbatim, and a compliant client parses the challenge, discovers the authorization server through the metadata document, and can run a step-up authorization for a token with the missing scope. The gateway and the policies contain no MCP-specific logic, and the client needs no gateway-specific error handling.
+
+A token carrying only `mortgage:read` calling `submit_mortgage_change_request` triggers the challenge:
+
+```bash
+curl -s -i \
+  -H "Authorization: Bearer $TOKEN_WITHOUT_MORTGAGE_WRITE" \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"submit_mortgage_change_request","arguments":{"changeType":"PAYMENT_DATE"}}}' \
+  https://apimid4ai.azure-api.net/mortgage-mcp/mcp/mortgage
+```
+
+The response carries the challenge in the header and the JSON-RPC error in the body:
+
+```http
+HTTP/1.1 403 Forbidden
+WWW-Authenticate: Bearer error="insufficient_scope", scope="mortgage:write", resource_metadata="https://apimid4ai.azure-api.net/.well-known/oauth-protected-resource/mortgage-mcp/mcp/mortgage", error_description="This operation requires the mortgage:write scope"
+Content-Type: application/json
+```
+{:.no-collapse}
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 2,
+  "error": {
+    "code": -32003,
+    "message": "Forbidden"
+  }
+}
+```
+{:.no-collapse}
+
 The human-in-the-loop path works as a deny-then-challenge loop. A PDP decision is synchronous — it cannot pause and wait for a human — so a risky change is first denied with the `approval_required` challenge. The human is redirected by the agent to the authorization server to obtain a short-lived transaction token whose claims mirror the approved transaction exactly (with the transaction context carried inside the access token itself):
 
 ```json
@@ -379,6 +417,7 @@ The human-in-the-loop path works as a deny-then-challenge loop. A PDP decision i
   "txn": "TXN-8f3c1a90-4d2e-4b7a-9c1f-2e5d6a8b3c4d"
 }
 ```
+{:.no-collapse}
 
 The `txn` claim is the transaction identifier minted by the authorization server. When the agent retries the identical call with that token, the approval policy validates the HITL by comparing every `tctx` claim against the parsed payload, attribute to attribute (the mirror):
 
