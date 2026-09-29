@@ -97,8 +97,6 @@ The integration follows three rules:
 2. **Deny** — the PDP returns HTTP 200 with a top-level `response` object containing a complete response to hand back to the client: status code, reason, headers (including `WWW-Authenticate`), and body. The status in that object is the PDP's choice, not the PEP's: `401` with a `WWW-Authenticate` header when the token is invalid or a step-up is required, `403` when the request is authenticated but not authorized. The PEP relays it verbatim.
 3. **Fail closed** — any transport failure or non-200 result is an integration error, not an authorization decision. The PEP does not continue and returns `502 Bad Gateway` (`sideband-unavailable` for a failed call, `sideband-error` for a non-200 reply) — an unreachable PDP never becomes implicit access.
 
-This split also has a security benefit for authentication: a denial can carry a `401` with a `WWW-Authenticate` challenge (token invalid or a step-up required) instead of a generic `403`, so the client can react to authentication and authorization failures differently.
-
 
 For an MCP call such as:
 
@@ -317,7 +315,7 @@ A non-200 status is also an integration error — not an authorization denial �
 <!-- No response object means PERMIT; continue to the backend unchanged. -->
 ```
 
-On denial, the fragment extracts `response_code`, `response_status`, the response headers (looking for `content-type` and `www-authenticate`), and the body, then relays them to the caller. The status is the authorization service's own decision — `401` for authentication failures or step-up, `403` for authorization failures:
+On denial, the fragment extracts `response_code`, `response_status`, the response headers (looking for `content-type` and `www-authenticate`), and the body, then relays them to the caller. The status is PingAuthorize's decision — `401` when the token is invalid or missing, `403` when the caller is authenticated but not authorized (including the MCP insufficient_scope challenge):
 
 ```xml
 <set-variable name="authorizeDenyStatus" value="@{
@@ -335,20 +333,6 @@ On denial, the fragment extracts `response_code`, `response_status`, the respons
     return (string)denial[&quot;response_status&quot;] ?? &quot;Forbidden&quot;;
 }" />
 ```
-
-The relayed body preserves the JSON-RPC envelope: the fragment reads the `id` from the original MCP request so the error correlates with the call, passes through the PDP's denial body when present, and otherwise synthesizes a JSON-RPC error (`-32001` for 401, `-32003` otherwise):
-
-```json
-{
-  "jsonrpc": "2.0",
-  "id": 2,
-  "error": {
-    "code": -32003,
-    "message": "Forbidden"
-  }
-}
-```
-{:.no-collapse}
 
 Finally, the denial is returned with the authorization service's status, reason, and `WWW-Authenticate` header when one was supplied.
 
@@ -368,21 +352,11 @@ The following controls are evaluated in order (first applicable wins), after a g
 6. **Allow High Risk Changes with HITL** — a risky change is permitted when the token carries an approval whose transaction context mirrors this exact payload, claim by claim, and whose `txn` claim matches the transaction id in the payload (validated with the HITL mechanism described below).
 7. **Default Deny** — anything else: unknown tools, wrong scopes, anything unmatched.
 
-Scopes act as capability classes (`mortgage:read`, `mortgage:write`) that policies map tools onto, so adding a tool never requires re-issuing tokens. Risk lives in the payload, not the tool: the same `submit_mortgage_change_request` call flips between permit and challenge based on its `changeType` argument.
+Scopes act as capability classes (`mortgage:read`, `mortgage:write`), so adding a tool never requires reconfiguring scopes. Risk is derived from the tool call payload, not the tool: the same `submit_mortgage_change_request` call results in permit and challenge based on its `changeType` argument.
 
-When a policy denies a request because the token lacks the required scope, the denial is MCP-compliant. PingAuthorize composes the challenge defined by the [MCP authorization specification](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization){:target="_blank"}: HTTP `403` with a `WWW-Authenticate` header carrying `error="insufficient_scope"`, the required `scope`, and the `resource_metadata` URL of the Protected Resource Metadata document that the MCP server exposes. The fragment relays the decision verbatim, and a compliant client parses the challenge, discovers the authorization server through the metadata document, and can run a step-up authorization for a token with the missing scope. The gateway and the policies contain no MCP-specific logic, and the client needs no gateway-specific error handling.
+When a policy denies a request because the token lacks the required scope, the denial is MCP-compliant. PingAuthorize composes the challenge defined by the [MCP authorization specification](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization){:target="_blank"}: HTTP `403` with a `WWW-Authenticate` header carrying `error="insufficient_scope"`, the required `scope`, and the `resource_metadata` URL of the Protected Resource Metadata document that the MCP server exposes. The fragment relays the decision, and a compliant client parses the challenge, discovers the authorization server through the metadata document, and can run a step-up authorization for a token with the missing scope.
 
-A token carrying only `mortgage:read` calling `submit_mortgage_change_request` triggers the challenge:
-
-```bash
-curl -s -i \
-  -H "Authorization: Bearer $TOKEN_WITHOUT_MORTGAGE_WRITE" \
-  -H "Content-Type: application/json" \
-  -d '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"submit_mortgage_change_request","arguments":{"changeType":"PAYMENT_DATE"}}}' \
-  https://apimid4ai.azure-api.net/mortgage-mcp/mcp/mortgage
-```
-
-The response carries the challenge in the header and the JSON-RPC error in the body:
+For example a token carrying only `mortgage:read` calling `submit_mortgage_change_request` triggers the challenge:
 
 ```http
 HTTP/1.1 403 Forbidden
