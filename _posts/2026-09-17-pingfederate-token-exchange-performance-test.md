@@ -19,7 +19,7 @@ layout: post
 
 ## Context
 
-Token exchange is gaining popularity as a way to cross trust boundaries in agentic architectures, and I have described the pattern in earlier posts on [SPIFFE workload identity](/posts/spiffe-token-exchange-for-agent-workloads/) and on [protecting MCP servers](/posts/protecting-mcp-servers-with-agentcore-gateway-and-pingone-authorize/).
+Token exchange is gaining popularity as a way to cross trust boundaries in agentic architectures, and I have described the pattern in earlier posts on [SPIFFE workload identity]({{ '/posts/spiffe-token-exchange-for-agent-workloads/' | relative_url }}) and on [protecting MCP servers]({{ '/posts/centralizing-mcp-authorization-with-p1authorize-part-1-azure-apim/' | relative_url }}).
 
 Whenever I propose it, the same performance concern comes up: every extra exchange adds a hop to the authorization server, and a chatty agent could multiply that hop many times. The concern is reasonable, so I measured the token exchange performance against a two-engine PingFederate cluster on Kubernetes.
 
@@ -247,4 +247,4 @@ In this test configuration, the token-exchange step remained in the single-digit
 - [OAuth 2.0 Token Exchange](https://datatracker.ietf.org/doc/html/rfc8693){:target="_blank"} — RFC 8693.
 - [PingFederate OAuth configuration](https://docs.pingidentity.com/pingfederate/latest/administrators_reference_guide/pf_oauth_config.html){:target="_blank"} — token-exchange processor policies and access token managers.
 - [k6 documentation](https://grafana.com/docs/k6/latest/){:target="_blank"} — constant-arrival-rate executor and thresholds.
-- [Securing agentic workflows with token exchange and workload identity](/posts/spiffe-token-exchange-for-agent-workloads/){:target="_blank"} — the identity pattern this test measures the cost of.
+- [Securing agentic workflows with token exchange and workload identity]({{ '/posts/spiffe-token-exchange-for-agent-workloads/' | relative_url }}) — the identity pattern this test measures the cost of.
