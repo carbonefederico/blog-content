@@ -49,7 +49,7 @@ PingAuthorize solves those challenges by centralizing **policy evaluation**: it 
 
 ## The solution
 
-The first implementation in this series implements an APIM Policy Fragment that delegates the authorization decisions to PingAuthorize. The fragment forwards the entire original MCP request to the PingAuthorize Sideband API, and then either forwards the call to the MCP server or relays the authorization denial to the caller.
+The first implementation in this series implements an APIM Policy Fragment that delegates the authorization decisions to PingAuthorize. The fragment forwards the original MCP request to the PingAuthorize Sideband API, and then either forwards the call to the MCP server or relays the authorization denial to the caller.
 
 The following diagram depicts the components in the implementation and their interactions.
 
@@ -83,13 +83,13 @@ flowchart LR
 - **PingAuthorize Sideband API** — acts as the Policy Decision Point (PDP). Receives the original request, evaluates policy over the full HTTP context, and either allows the call through (no response object) or returns a complete denial response for the PEP to relay.
 - **Protected MCP** — the protected MCP server (in our context a demo Mortgage MCP), receives requests only after APIM allows them through.
 
-The important aspect is that APIM does not contain the business authorization logic. It forwards the raw request, and enforces whatever comes back.
+The important aspect is that APIM does not contain the business authorization logic. It forwards the request context required for policy evaluation and enforces the resulting authorization decision.
 
-> **Scope note:** This article focuses on the authorization integration between APIM and PingAuthorize. Token validation, token exchange, and backend MCP server security are outside the scope of this article. In a production setup, APIM would exchange the inbound token for a backend-scoped token before calling the MCP server. For simplicity, the demo MCP server is left open and no token exchanges have been configured in APIM.
+> **Scope note:** This article focuses on the authorization integration between APIM and PingAuthorize. Token validation, token exchange, and backend MCP server security are outside the scope of this article. In a production setup, APIM could exchange the inbound token for a backend-scoped token before calling the MCP server. For simplicity, the demo MCP server is left open and no token exchanges have been configured in APIM.
 
 ## The Sideband Integration Model
 
-With this model, the APIM sends the original request as it arrived, and PingAuthorize evaluates policy against the full HTTP context: request method, URL, headers (including the `Authorization` bearer token and its claims), query parameters, client IP, and the request body. 
+With this model, APIM constructs a Sideband representation of the incoming request containing the HTTP context required by PingAuthorize. PingAuthorize evaluates policy against the full HTTP context: request method, URL, headers (including the `Authorization` bearer token and its claims), query parameters, client IP, and the request body. 
 
 The integration follows three rules:
 
@@ -347,7 +347,7 @@ The following controls are evaluated in order (first applicable wins), after a g
 1. **Token validity** — an inactive token never reaches the policy set: the global Token Validation policy denies it with a `401` before any MCP logic runs.
 2. **Allow Delegated Token by VIP Users Only** — when the call is delegated (the token carries both a subject and an actor subject, `act.sub`, meaning an agent is acting for a user), it is permitted only if the subject is a VIP user. A standard user behind the same agent is denied with `delegation_not_permitted`; direct, non-delegated calls are untouched by this gate.
 3. **Allow read operations** — the read tools (`get_mortgage_summary`, `calculate_affordability`, `generate_rate_quote`) are permitted for tokens carrying the `mortgage:read` scope.
-4. **Allow low risk changes** — `changeType = PAYMENT_DATE` (moving a due date, no economic risk) is permitted on the `mortgage:write` scope with no human involvement.
+4. **Allow low risk changes** — `changeType = PAYMENT_DATE` (moving a due date, in this demo defined as low risk) is permitted on the `mortgage:write` scope with no human involvement.
 5. **Deny High Risk Changes Without HITL** — economically risky changes (`RATE_SWITCH`, `TERM_CHANGE`, `OVERPAYMENT`) are denied with a machine-readable `approval_required` challenge unless the token carries a matching approval. Nothing is executed; the denial *is* the challenge.
 6. **Allow High Risk Changes with HITL** — a risky change is permitted when the token carries an approval whose transaction context mirrors this exact payload, claim by claim, and whose `txn` claim matches the transaction id in the payload (validated with the HITL mechanism described below).
 7. **Default Deny** — anything else: unknown tools, wrong scopes, anything unmatched.
@@ -381,6 +381,7 @@ The human-in-the-loop path works as a deny-then-challenge loop. A PDP decision i
 
 ```json
 {
+  ... standard claims ...
   "approved_for": "submit_mortgage_change_request",
   "tctx": {
     "tool": "submit_mortgage_change_request",
