@@ -19,7 +19,7 @@ layout: post
 
 ## Context
 
-Token exchange is gaining popularity as a way to cross trust boundaries in agentic architectures, and I have described the pattern in earlier posts on [SPIFFE workload identity]({{ '/posts/spiffe-token-exchange-for-agent-workloads/' | relative_url }}) and on [protecting MCP servers]({{ '/posts/centralizing-mcp-authorization-with-p1authorize-part-1-azure-apim/' | relative_url }}).
+Token exchange is gaining popularity as a way to cross trust boundaries in agentic architectures, and I have described the pattern in earlier posts on [SPIFFE workload identity]({{ '/posts/spiffe-token-exchange-for-agent-workloads/' | relative_url }}) and on [centralizing MCP authorization with PingAuthorize]({{ '/posts/centralizing-mcp-authorization-with-p1authorize-part-1-azure-apim/' | relative_url }}).
 
 Whenever I propose it, the same performance concern comes up: every extra exchange adds a hop to the authorization server, and a chatty agent could multiply that hop many times. The concern is reasonable, so I measured the token exchange performance against a two-engine PingFederate cluster on Kubernetes.
 
