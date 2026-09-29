@@ -239,39 +239,45 @@ APIM policy expressions cannot access the originating TCP source port, but the S
 
 ### 3. Call the Sideband API
 
-The fragment posts the envelope to `{endpoint}/sideband/request`, authenticating with the shared secret in the `PDG-TOKEN` header:
+The fragment posts the envelope to `{endpoint}/sideband/request`, authenticating with the shared secret in the `PDG-TOKEN` header. The call is wrapped in an APIM `retry` policy because APIM pools keep-alive connections to the Sideband endpoint, and a pooled socket that the server has already closed fails instantly — under rapid traffic this surfaced as intermittent `502` responses even though PingAuthorize was healthy. The decision probe is idempotent (a pure policy evaluation with no side effects), so retrying is safe: the first retry is immediate, the second follows a 1-second gap:
 
 ```xml
-<send-request
-    mode="new"
-    response-variable-name="authorizeSidebandResponse"
-    timeout="20"
-    ignore-error="true">
+<retry condition="@(context.Variables[&quot;authorizeSidebandResponse&quot;] == null)"
+       count="2"
+       interval="1"
+       first-fast-retry="true">
 
-    <set-url>@(&quot;{{AuthorizeSidebandRequestEndpoint}}&quot;.TrimEnd('/') + &quot;/sideband/request&quot;)</set-url>
-    <set-method>POST</set-method>
+    <send-request
+        mode="new"
+        response-variable-name="authorizeSidebandResponse"
+        timeout="20"
+        ignore-error="true">
 
-    <set-header name="PDG-TOKEN" exists-action="override">
-        <value>{{AuthorizeSidebandClientToken}}</value>
-    </set-header>
+        <set-url>@(&quot;{{AuthorizeSidebandRequestEndpoint}}&quot;.TrimEnd('/') + &quot;/sideband/request&quot;)</set-url>
+        <set-method>POST</set-method>
 
-    <set-header name="Content-Type" exists-action="override">
-        <value>application/json</value>
-    </set-header>
+        <set-header name="PDG-TOKEN" exists-action="override">
+            <value>{{AuthorizeSidebandClientToken}}</value>
+        </set-header>
 
-    <set-header name="Accept" exists-action="override">
-        <value>application/json</value>
-    </set-header>
+        <set-header name="Content-Type" exists-action="override">
+            <value>application/json</value>
+        </set-header>
 
-    <set-body>@((string)context.Variables["authorizeSidebandRequestBody"])</set-body>
-</send-request>
+        <set-header name="Accept" exists-action="override">
+            <value>application/json</value>
+        </set-header>
+
+        <set-body>@((string)context.Variables["authorizeSidebandRequestBody"])</set-body>
+    </send-request>
+</retry>
 ```
 
 The credential header name is part of the Sideband API configuration, so it must match what your PingAuthorize Sideband API endpoint expects — `PDG-TOKEN` here.
 
 ### 4. Enforce the Decision
 
-First, fail closed on transport problems. A failed call leaves the response variable empty:
+First, fail closed on transport problems. If every retry fails, the response variable stays empty:
 
 ```xml
 <choose>
