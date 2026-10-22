@@ -336,7 +336,7 @@ To test the integration I used a demo portfolio MCP server — four tools: two r
 - **Order Tool: high risk denied** — a `submit_trade_order` call with `amount > threshold` is denied with `order_above_limit`, regardless of any approval: approval cannot exceed the band.
 - **Default Deny** — everything else.
 
-The **gate ladder** is a set of mandatory rules inside Session Methods, Read Tools, and the HITL policy:
+The **common gate rules** are a set of mandatory rules inside Session Methods, Read Tools, and the HITL policy:
 
 - **Audience** — the token must be minted for the MCP-specific audience `Constants.Portfolio_MCP Audience` (the gateway's `/mcp/portfolio` resource URI, per RFC 8707). A token for the wrong resource is `invalid_token` → `401`.
 - **Delegated-agent authorization** — the acting agent must equal the declared `Constants.Portfolio Analysis Agent` (`customer_support_agent`), an admin-declared allow-list. Any other actor is denied with `agent_identity_mismatch`.
