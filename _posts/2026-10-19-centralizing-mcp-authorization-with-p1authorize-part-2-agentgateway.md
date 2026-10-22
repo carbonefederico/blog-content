@@ -23,8 +23,6 @@ The [first article in this series](https://carbonefederico.github.io/blog-conten
 
 This second part applies the same model to **[agentgateway](https://github.com/agentgateway/agentgateway){:target="_blank"}**, an open source, Envoy-compatible proxy purpose-built for AI traffic. The goal is the same as part 1: the gateway contains no business authorization logic. agentgateway captures the MCP call, hands its full context to PingAuthorize, and enforces whatever decision comes back. Same PDP, same Sideband API, same policy style — a different gateway.
 
-## What Problem This Article Solves: Enforcement Logic Per Platform
-
 Agentgateway can delegate authorization decisions via an [Envoy's external authorization filter](https://www.envoyproxy.io/docs/envoy/latest/configuration/http/http_filters/ext_authz_filter){:target="_blank"} — a gRPC `Authorization/Check` call whose semantics differ from the PingAuthorize Sideband API. In this article I will describe a small standalone **translation adapter** that speaks Envoy ext_authz on one side and the PingAuthorize Sideband API on the other and allows us to integrate agentgateway with PingAuthorize.
 
 ## The solution
@@ -72,7 +70,7 @@ The three rules from part 1 are unchanged, because the PDP is unchanged:
 
 1. **Permit** — the PDP returns HTTP 200 with no top-level `response` object.
 2. **Deny** — the PDP returns HTTP 200 with a top-level `response` object containing a complete response for the PEP to relay verbatim: status code (`401` with `WWW-Authenticate`, or `403`), headers, and body.
-3. **Fail closed** — transport failures and non-200 results are integration errors, not authorization decisions. The caller gets `502 Bad Gateway`, never implicit access.
+3. **Fail closed** — transport failures, non-200 results, and any 200 the PEP cannot parse are integration errors, not authorization decisions. The caller gets `502 Bad Gateway`, never implicit access.
 
 What changes is where the rules are implemented. On APIM they lived inside a policy fragment; here they live in the adapter, which performs the necessary translation.
 
@@ -114,8 +112,9 @@ The adapter sends this MCP call to the sideband endpoint as the following reques
 
 A permit returns HTTP 200 with no `response` object and the adapter answers the gateway with gRPC `OK`. A denial returns HTTP 200, and the adapter converts it into a `DeniedHttpResponse` carrying PingAuthorize's status, headers (including `WWW-Authenticate`), and body — which agentgateway relays to the client verbatim.
 
-Two edge cases the adapter handles beyond the happy path:
+Three edge cases the adapter handles beyond the happy path:
 
+- **Unparseable 200** — an HTTP 200 with an empty or malformed body is not an answer, and the naive translation would read it as a permit: `body?.response ? deny : permit` fails open exactly when the PDP's reply is garbage. The adapter reserves permit for parseable responses — a 200 it cannot parse returns 502 `sideband-error`, the same posture as Ping's reference Kong adapter.
 - **Denial without a body** — PingAuthorize may deny with status and headers but no body. An MCP client receiving a bare HTTP error loses correlation with its pending JSON-RPC request, so the adapter synthesizes a JSON-RPC error envelope (`-32001` for 401, `-32003` for 403) echoing the original JSON-RPC `id`.
 - **Adapter outage** — if the adapter process is down, the gRPC callout itself fails. agentgateway's `failureMode: deny` keeps the request closed. There is no permit-on-error path anywhere in the chain.
 
@@ -185,6 +184,13 @@ export async function callSideband(config, envelope, fetchImpl = globalThis.fetc
       const elapsedMs = Math.round(performance.now() - started);
 
       if (response.status === 200) {
+        // A 200 the PEP cannot parse is not an answer: empty or malformed
+        // bodies fail closed (502 sideband-error) rather than reading as
+        // permit — same posture as Ping's Kong adapter. A real permit is the
+        // echoed request envelope; a deny embeds a `response` object.
+        if (body === null) {
+          return { kind: "error", status: 502, message: "Malformed sideband response", elapsedMs };
+        }
         return body?.response
           ? { kind: "deny", body: body.response, elapsedMs }
           : { kind: "permit", body, elapsedMs };
@@ -249,7 +255,7 @@ export function toCheckResponse(result, originalBodyText) {
 }
 ```
 
-Two edge cases the adapter handles beyond the happy path:
+One edge case the translation handles beyond the happy path:
 
 - **Denial without a body** — PingAuthorize may deny with status and headers but no body. An MCP client receiving a bare HTTP error loses correlation with its pending JSON-RPC request, so the adapter synthesizes a JSON-RPC error envelope (`-32001` for 401, `-32003` for 403) echoing the original JSON-RPC `id`:
 
@@ -321,7 +327,7 @@ A second route serves the [RFC 9728](https://datatracker.ietf.org/doc/html/rfc97
 
 ## Policies
 
-To test the integration I used a demo portfolio MCP server — four tools: two reads (`get_portfolio_summary`, `list_positions`), a non-binding simulation (`simulate_trade`), and one risk-tiered write, `submit_trade_order`. The live policy tree is five named policies under a per-MCP wrapper, plus the ever-present Default Deny — every request class is explicitly covered, with no implicit ordering fallbacks (FirstApplicable, after the global Token Validation policy rejects bad tokens with `401`):
+To test the integration I used a demo portfolio MCP server — four tools: two reads (`get_portfolio_summary`, `list_positions`), a non-binding simulation (`simulate_trade`), and one risk-tiered write, `submit_trade_order`. The live policy tree is five named policies under a per-MCP wrapper, plus Default Deny :
 
 | Policy | Condition | Verdict |
 |---|---|---|
@@ -332,19 +338,21 @@ To test the integration I used a demo portfolio MCP server — four tools: two r
 | **Order Tool: high risk denied** | `submit_trade_order` AND `amount > threshold` | deny with `order_above_limit` — approval cannot exceed the band |
 | **Default Deny** | everything else | deny |
 
-The **gate ladder** is a set of mandatory rules inside Session Methods, Read Tools, and the HITL policy, combined with `DenyOverrides` so every rule evaluates — a permit hit under `FirstApplicable` would be terminal and silently skip the later gates:
+The **gate ladder** is a set of mandatory rules inside Session Methods, Read Tools, and the HITL policy:
 
 - **Audience** — the token must be minted for the MCP-specific audience `Constants.Portfolio_MCP Audience` (the gateway's `/mcp/portfolio` resource URI, per RFC 8707). A token for the wrong resource is `invalid_token` → `401`.
-- **Delegated-agent authorization** — fires only when the token delegates (`act.sub` present): the acting agent must equal the declared `Constants.Portfolio Analysis Agent` (`customer_support_agent`), an admin-declared allow-list. Any other delegated actor is denied with `agent_identity_mismatch`; non-delegated requests are outside this rule entirely. Authorization of an agent is an admin decision in the PDP, not a property of the token.
+- **Delegated-agent authorization** — the acting agent must equal the declared `Constants.Portfolio Analysis Agent` (`customer_support_agent`), an admin-declared allow-list. Any other actor is denied with `agent_identity_mismatch`.
 - **User claim** — delegated access is reserved to VIP users (`sub_type == vip_user`); a standard user behind an agent is denied with `delegation_not_permitted`.
 
 In the HITL policy the mirror sits behind those gates and the `portfolio:write` scope check: the token's transaction context must mirror the payload field by field (`tool`, `customerId`, `symbol`, `side`, `quantity`, `amount`) and its `txn` claim must match the transaction id in the payload. Without it, the order is denied with the machine-readable `approval_required` challenge — the denial *is* the challenge.
+
+One limitation of this design: the mirror binds an approval to a payload, not to a single execution. Re-submitting the identical approved transaction passes the mirror every time — replay prevention needs separate enforcement (a consumed-transaction registry at the backend, or a one-time `jti` claim the PDP checks), and this demo deliberately leaves that layer out.
 
 The bands are tunable without touching a rule: `Constants.Order Approval Threshold` (a NUMBER constant, 20,000 in the demo) sets the HITL/deny boundary, and the audience and agent constants drive the ladder — raising or lowering the limit is a constant edit in the Policy Designer, not a redeployment.
 
 ## Key Takeaways
 
-This article described how agentgateway can delegate authorization decisions to PingAuthorize. agentgateway's extAuthz hook natively delegates authorization, but its Envoy semantics (gRPC `PERMISSION_DENIED` for denial) differ from PingAuthorize's sideband encoding. A small standalone adapter bridges the two, enforces fail-closed, and is reusable by any Envoy-compatible enforcement point.
+This article described how agentgateway can delegate authorization decisions to PingAuthorize. agentgateway's extAuthz hook natively delegates authorization, but its Envoy semantics differ from PingAuthorize's sideband encoding. A small standalone adapter bridges the two, enforces fail-closed, and is reusable by any Envoy-compatible enforcement point.
 
 The pattern now spans two very different platforms, and this proves how PingAuthorize can centralize authorization decisions across different platforms. The translation component differs — a policy fragment on APIM, an adapter process here — but the PDP, the policy style, the fail-closed posture, and the audit story are the same.
 
