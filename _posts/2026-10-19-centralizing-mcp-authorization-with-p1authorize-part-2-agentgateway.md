@@ -327,16 +327,14 @@ A second route serves the [RFC 9728](https://datatracker.ietf.org/doc/html/rfc97
 
 ## Policies
 
-To test the integration I used a demo portfolio MCP server — four tools: two reads (`get_portfolio_summary`, `list_positions`), a non-binding simulation (`simulate_trade`), and one risk-tiered write, `submit_trade_order`. The live policy tree is five named policies under a per-MCP wrapper, plus Default Deny :
+To test the integration I used a demo portfolio MCP server — four tools: two reads (`get_portfolio_summary`, `list_positions`), a non-binding simulation (`simulate_trade`), and one risk-tiered write, `submit_trade_order`. The live policy tree is five named policies under a per-MCP wrapper, plus Default Deny:
 
-| Policy | Condition | Verdict |
-|---|---|---|
-| **Session Methods** | MCP method calls (`initialize`, `tools/list`, `ping`) | gate ladder, then `portfolio:read` scope |
-| **Read Tools** | the read tools (summary, positions, simulation) | gate ladder, then `portfolio:read` scope |
-| **Order Tool: missing amount** | `submit_trade_order` AND `amount ≤ 0` (absent amounts resolve to 0 via the attribute's default value) | deny with `unpriceable_order_denied` |
-| **Order Tool: medium risk HITL** | `submit_trade_order` AND `0 < amount ≤ threshold` | gate ladder, then `portfolio:write`, then the **approval mirror** |
-| **Order Tool: high risk denied** | `submit_trade_order` AND `amount > threshold` | deny with `order_above_limit` — approval cannot exceed the band |
-| **Default Deny** | everything else | deny |
+- **Session Methods** — protocol-level calls (`initialize`, `tools/list`, `ping`) are allowed if the common gate rules (see below) are met and the token includes the `portfolio:read` scope.
+- **Read Tools** — the read tools (`get_portfolio_summary`, `list_positions`, `simulate_trade`) are allowed if the common gate rules (see below) are met and the token includes the `portfolio:read` scope.
+- **Order Tool: missing amount** — a `submit_trade_order` call with `amount ≤ 0` is denied with `unpriceable_order_denied`; absent amounts resolve to 0 via the attribute's default value, so an unpriced order is always denied.
+- **Order Tool: medium risk HITL** — a `submit_trade_order` call with `0 < amount ≤ threshold` is allowed only if the common gate rules (see below) are met, the token includes the `portfolio:write` scope, and the approval mirror binds the token's transaction context to the payload.
+- **Order Tool: high risk denied** — a `submit_trade_order` call with `amount > threshold` is denied with `order_above_limit`, regardless of any approval: approval cannot exceed the band.
+- **Default Deny** — everything else.
 
 The **gate ladder** is a set of mandatory rules inside Session Methods, Read Tools, and the HITL policy:
 
