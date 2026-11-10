@@ -244,7 +244,7 @@ Four tokens participate directly in the OAuth exchange: three inputs and one out
 }
 ```
 
-The `aud` chain is how the agent decides where the token may be used. The agent knows which backend it needs and passes the target URI in `GetResourceOauth2Token`'s `resources` parameter. AgentCore Identity carries it into the exchange as the RFC 8707 `resource` parameter, and PingFederate stamps the delegated token's `aud` from it. The scope travels in `scope`, and the token lifetime is 15 minutes (configurable).
+The `aud` chain runs through three parties. The agent requests the backend resource it needs and passes the target URI in `GetResourceOauth2Token`'s `resources` parameter. PingFederate decides whether to issue a token for it: AgentCore Identity carries the target into the exchange as the RFC 8707 `resource` parameter, and the delegated access token mapping stamps the delegated token's `aud` from it. The resource server enforces the audience when the token is used. The scope travels in `scope`, and the token lifetime is 15 minutes (configurable).
 
 ## PingFederate Configuration
 
@@ -273,7 +273,7 @@ The key PingFederate configuration elements are:
 - a contract mapping `sub` from the subject token's `sub` and `act.sub` from the actor token's `sub`
 - a delegated access token mapping that selects on the requested resource URI and stamps the delegated token's audience and scopes; a resource URI that no mapping claims is rejected with `invalid_target`
 
-The demo config leaves two authorization decisions implicit. Validating that the subject token is genuine and the actor is a legitimate AWS workload establishes who the parties are; it does not authorize the delegation between them. And nothing verifies that the authenticated client matches the actor: the `client_id` and the actor token's `sub` both name the runtime role, but PingFederate does not compare them. The isolation holds because the provider's `clientId` is fixed in its configuration and only the role holding the `GetResourceOauth2Token` grant can drive the exchange.
+The demo config leaves two authorization decisions implicit. Validating that the subject token is genuine and the actor is a legitimate AWS workload establishes who the parties are; it does not authorize the delegation between them. And nothing verifies that the authenticated client matches the actor: the `client_id` and the actor token's `sub` both name the runtime role, but PingFederate does not compare them. The IAM and provider configuration restrict access to the exchange — the provider's `clientId` is fixed in its configuration, and only the role holding the `GetResourceOauth2Token` grant can drive it — but they do not enforce delegation authorization.
 
 A production deployment should turn both into explicit policy. PingFederate evaluates issuance criteria on the delegated access token mapping, and each criterion is an [OGNL expression](https://docs.pingidentity.com/pingfederate/13.1/administrators_reference_guide/pf_construct_ognl_express.html): one comparing `client_id` against the actor token's `sub` rejects any client-actor mismatch, and one checking the subject against the actor's delegation policy restricts which workloads may act for which users. Both run per request, before any token is issued.
 
@@ -281,7 +281,7 @@ The agent client itself is registered with no secret: `private_key_jwt` client a
 
 ## When To Use This Pattern
 
-This pattern fits when your agents run on AgentCore and call resources governed by your own authorization server, and you want the agents to hold no secrets and no OAuth code. The platform does the attestation, the signing, and the exchange, and your authorization server makes the delegation decision.
+This pattern fits when your agents run on AgentCore and call resources governed by your own authorization server, and you want the agents to hold no secrets and no OAuth code. The platform performs the workload identity assertion, the signing, and the exchange, and your authorization server makes the delegation decision.
 
 As before, token exchange does not replace API authorization. The resource server still validates the token and enforces scopes and object-level rules. Token exchange gives it a better token to validate.
 
