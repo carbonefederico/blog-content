@@ -1,6 +1,6 @@
 ---
 title: Measuring PingAuthorize performance for MCP decisions
-description: A load-test of the PingAuthorize Sideband API decision path — one authorization decision per MCP tool call — against a two-pod PingAuthorize cluster on Kubernetes, up to 2000 decisions per second
+description: A load-test of the PingAuthorize Sideband API decision path — one authorization decision per MCP tool call — against a two-pod PingAuthorize cluster on Kubernetes, up to 2000 decisions per second, repeated with a 100-MCP-server policy tree
 date: '2026-11-18'
 categories:
 - AI
@@ -19,13 +19,13 @@ layout: post
 
 ## Context
 
-Centralizing authorization in a policy decision point is the pattern I keep coming back to for MCP gateways and agentic architectures. I described it in earlier posts on [centralizing MCP authorization with PingAuthorize]({{ '/posts/centralizing-mcp-authorization-with-p1authorize-part-1-azure-apim/' | relative_url }}) and on [agent-side enforcement with AgentGateway]({{ '/posts/centralizing-mcp-authorization-with-p1authorize-part-2-agentgateway/' | relative_url }}).
+Centralizing authorization in a policy decision point TODO provides **** benefits for MCP gateways and agentic architectures. I described it in earlier posts on [centralizing MCP authorization with PingAuthorize]({{ '/posts/centralizing-mcp-authorization-with-p1authorize-part-1-azure-apim/' | relative_url }}) and on [agent-side enforcement with AgentGateway]({{ '/posts/centralizing-mcp-authorization-with-p1authorize-part-2-agentgateway/' | relative_url }}).
 
-Whenever I propose it, the same performance concern comes up: every proxied tool call makes an extra hop to the policy engine, and a chatty agent multiplies that hop many times per conversation. The concern is reasonable, so I measured the decision path itself: k6 agent Pods playing the gateway's role, calling PingAuthorize's [Sideband API](https://docs.pingidentity.com/pingauthorize/11.1/pingauthorize_server_administration_guide/paz_about_sideband_api.html) with one authorization decision per call, against a two-pod PingAuthorize cluster on Kubernetes.
+Every proxied tool call makes an extra hop to the policy engine, and a chatty agent multiplies that hop many times per conversation. This has a perofance cost, that I decided to measure the decision path itself: k6 agent Pods playing the gateway's role, calling PingAuthorize's [Sideband API](https://docs.pingidentity.com/pingauthorize/11.1/pingauthorize_server_administration_guide/paz_about_sideband_api.html) with one authorization decision per call, against a two-pod PingAuthorize cluster on Kubernetes.
 
-**The result**: In the run with the median p95 at each load level, p95 latency was 26.67 ms at a 2000/s target and below 9 ms through a 1500/s target. Across all twelve counted runs, the workload checks recorded 100% expected outcomes, zero classified errors, and zero dropped iterations.
+**The result**: in a non-production cluster, with small machines the result was promising: p95 latency below 9 ms with a load of 1500/s authorization requests per second.
 
-The campaign stops at 2000 decisions per second by choice: the goal was a representative baseline, not the saturation point, in a shared environment without dedicated infrastructure.
+The campaign ran multiple load levels and I stopped at 2000 decisions per second by choice: the goal was a representative baseline, not the saturation point, in a shared environment without dedicated infrastructure.
 
 ## The scenario
 
@@ -242,6 +242,14 @@ CPU figures come from approximately 15-second resource samples over the whole ru
 | 2000/s | 1.87 cores | 3.73 cores |
 
 At the highest stage, the mean of the replica CPU medians was roughly 47% of each pod's four-CPU limit. That limit is a ceiling, not guaranteed capacity: each hosting node had 3.4 allocatable vCPUs. Sampled peak memory was roughly 1.5 GiB per pod across all stages. At the highest stage, the ten generators' sampled CPU medians summed to roughly 7.4 cores; their work includes fresh-token signing, request construction, and metric recording.
+
+### 100 MCP servers at 1000 decisions per second
+
+The ladder measured a single MCP branch; a production gateway authorizes many. A follow-up campaign repeated the 1000/s stage with 100 MCP servers configured in PingAuthorize: the policy tree grew from one branch to 100 — the original plus 99 generated clones of the same 6-policy branch, each targeted at its own service with its own minted audience constant — and the generator drew the branch uniformly at random on every request, threading it through both the token's audience and the envelope URL. The deployment uses Ping's documented service-dispatch shape: a parameterized sideband endpoint (`/mcp/{mcp}`) derives the target service from the request path, so each decision lands directly on its branch's policy set.
+
+Tree size costs the median under a millisecond and the tail about 2.6 ms. The warm median-of-three — 100% expected outcomes, zero errors, zero dropped iterations — is 2.66 ms median, 8.72 ms p95, and 18.41 ms p99, against 1.79 ms and 6.07 ms for the single-branch baseline re-measured adjacent in time. The dispatch shape carries the flat part of that result: an earlier condition-gated variant, with each branch behind a URL-leaf condition, showed a position gradient (median 2.53 ms at branch 1 rising to 3.65 ms at branch 100 — the documented `FirstApplicable` sibling scan) that service dispatch flattens to 2.55–2.68 ms. The first run on the freshly redeployed PAZ measured cold — 12.29 ms p95 with a 2.2 s max on empty caches; the reported figures are the warm steady state.
+
+The comparison isolates tree size, not policy diversity: all 100 branches are structural clones, so an engine that caches compiled structures could treat them as one shape a diverse production tree could not share.
 
 ## Key takeaways
 
