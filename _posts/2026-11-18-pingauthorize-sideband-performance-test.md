@@ -23,7 +23,12 @@ Centralizing authorization in a policy decision point provides benefits for MCP 
 
 Every proxied tool call makes an extra hop to the policy engine, and a chatty agent multiplies that hop many times per conversation. This has a performance cost, that I measured with this setup: k6 agent Pods playing the gateway's role, calling PingAuthorize's [Sideband API](https://docs.pingidentity.com/pingauthorize/11.1/pingauthorize_server_administration_guide/paz_about_sideband_api.html) with one authorization decision per call, against a two-pod PingAuthorize cluster on Kubernetes.
 
-The campaign ran two scenarios: scenario 1 - single policy set to authorize 1 MCP. Scenario 2 - 100 policy sets to authorize 100 MCPs.  I stopped at 2000 decisions per second by choice: the goal was a representative baseline, not the saturation point, in a shared test environment.
+The campaign ran two scenarios: 
+
+- Scenario 1: single policy set to authorize 1 MCP
+- Scenario 2: 100 policy sets to authorize 100 MCPs. 
+
+I stopped at 2000 decisions per second by choice: the goal was a representative baseline, not the saturation point, in a shared test environment.
 
 **The result**: in a non-production cluster with small machines, I obtained a **p95 latency below 9 ms** at **1000 decisions per second with 100 MCP servers configured** — and at **1500 decisions per second** with a single MCP server.
 
