@@ -259,9 +259,7 @@ Median run of the three rounds at the 1000/s stage:
 
 Each stage's reported row is the **median run of its three**, selected by measured p95; the per-run p95s were 8.16/9.20/8.72 ms. All three warm runs scored 100% expected outcomes with zero errors and zero dropped iterations at an achieved rate of 954/s.
 
-Tree size costs the median under a millisecond and the tail about 2.6 ms: against the single-branch baseline re-measured adjacent in time (2.29 ms median, 5.03 ms p95 at the same 1000/s stage), the 100-branch tree adds 0.87 ms to the median and 3.69 ms to p95 while the load stays fixed. The dispatch shape carries the flat part of that result: an earlier condition-gated variant, with each branch behind a URL-leaf condition, showed a position gradient (median 2.53 ms at branch 1 rising to 3.65 ms at branch 100 — the documented `FirstApplicable` sibling scan) that service dispatch flattens to 2.55–2.68 ms. The first run on the freshly redeployed PAZ measured cold — 12.29 ms p95 with a 2.2 s max on empty caches; the reported figures are the warm steady state.
-
-CPU rose with the tree: the two replicas' sampled CPU medians summed to about 2.6 cores across the three warm runs (roughly 1.2 and 1.3 cores each), against 1.76 cores for the single-branch baseline at the same stage — about 0.85 cores more for evaluating 100 branches instead of one. Sampled peak memory stayed in the same band as every other stage, roughly 1.2–1.3 GiB per pod.
+Tree size costs the median under a millisecond and the tail about 2.6 ms. CPU rose with the tree: the two replicas' sampled CPU medians summed to about 2.6 cores across the three warm runs (roughly 1.2 and 1.3 cores each), against 1.76 cores for the single-branch baseline at the same stage — about 0.85 cores more for evaluating 100 branches instead of one. Sampled peak memory stayed in the same band as every other stage, roughly 1.2–1.3 GiB per pod.
 
 ## Key takeaways
 
